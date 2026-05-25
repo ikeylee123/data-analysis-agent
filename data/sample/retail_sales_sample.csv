@@ -1,0 +1,37 @@
+date,order_id,region,category,product_name,customer_segment,customer_name,sales,cost,profit,discount,quantity
+2026-01-03,RS-1001,East,Technology,Laptop Pro 14,Corporate,Synthetic Customer 001,2400.00,1800.00,600.00,0.05,2
+2026-01-04,RS-1002,West,Furniture,Ergo Office Chair,Consumer,Synthetic Customer 002,780.00,560.00,220.00,0.10,3
+2026-01-05,RS-1003,South,Office Supplies,Copy Paper Case,Small Business,Synthetic Customer 003,180.00,120.00,60.00,0.00,6
+2026-01-07,RS-1004,Central,Furniture,Executive Desk,Corporate,Synthetic Customer 004,1250.00,980.00,270.00,0.15,1
+2026-01-09,RS-1005,East,Technology,Wireless Headset,Consumer,Synthetic Customer 005,420.00,260.00,160.00,0.05,4
+2026-01-11,RS-1006,West,Office Supplies,Premium Notebook Pack,Consumer,Synthetic Customer 006,96.00,62.00,34.00,0.00,8
+2026-01-13,RS-1007,South,Furniture,Standing Desk Frame,Small Business,Synthetic Customer 007,920.00,760.00,160.00,0.20,2
+2026-01-15,RS-1008,Central,Technology,Color Laser Printer,Corporate,Synthetic Customer 008,1500.00,1180.00,320.00,0.10,1
+2026-01-18,RS-1009,East,Office Supplies,Ink Cartridge Bundle,Consumer,Synthetic Customer 009,360.00,210.00,150.00,0.05,5
+2026-01-20,RS-1010,West,Furniture,Conference Table,Corporate,Synthetic Customer 010,2100.00,1600.00,500.00,0.08,1
+2026-01-22,RS-1011,South,Technology,Tablet Standard,Consumer,Synthetic Customer 011,980.00,740.00,240.00,0.12,2
+2026-01-24,RS-1012,Central,Office Supplies,Desk Organizer Set,Small Business,Synthetic Customer 012,140.00,95.00,45.00,0.00,7
+2026-02-02,RS-1013,East,Furniture,Modular Bookshelf,Consumer,Synthetic Customer 013,640.00,580.00,60.00,0.25,2
+2026-02-04,RS-1014,West,Technology,4K Monitor,Corporate,Synthetic Customer 014,1800.00,1320.00,480.00,0.10,3
+2026-02-06,RS-1015,South,Office Supplies,Shipping Labels,Small Business,Synthetic Customer 015,88.00,54.00,34.00,0.00,10
+2026-02-08,RS-1016,Central,Furniture,Storage Cabinet,Corporate,Synthetic Customer 016,760.00,710.00,50.00,0.30,2
+2026-02-10,RS-1017,East,Technology,Point of Sale Scanner,Small Business,Synthetic Customer 017,1120.00,790.00,330.00,0.07,4
+2026-02-12,RS-1018,West,Office Supplies,Stapler Bulk Pack,Consumer,Synthetic Customer 018,72.00,42.00,30.00,0.00,12
+2026-02-14,RS-1019,South,Furniture,Guest Chair Set,Corporate,Synthetic Customer 019,560.00,610.00,-50.00,0.45,4
+2026-02-16,RS-1020,Central,Technology,Desktop Workstation,Corporate,Synthetic Customer 020,3200.00,2600.00,600.00,0.12,2
+2026-02-18,RS-1021,East,Office Supplies,Printer Paper Ream,Consumer,Synthetic Customer 021,48.00,32.00,16.00,0.00,6
+2026-02-20,RS-1022,West,Furniture,Lounge Sofa,Consumer,Synthetic Customer 022,1350.00,1420.00,-70.00,0.40,1
+2026-03-01,RS-1023,South,Technology,Network Router,Small Business,Synthetic Customer 023,860.00,610.00,250.00,0.08,2
+2026-03-03,RS-1024,Central,Office Supplies,Binder Carton,Corporate,Synthetic Customer 024,240.00,160.00,80.00,0.05,15
+2026-03-05,RS-1025,East,Furniture,Adjustable Desk,Corporate,Synthetic Customer 025,1480.00,1510.00,-30.00,0.35,2
+2026-03-07,RS-1026,West,Technology,Security Camera Kit,Small Business,Synthetic Customer 026,2200.00,1550.00,650.00,0.10,2
+2026-03-09,RS-1027,South,Office Supplies,Pen Assortment,Consumer,Synthetic Customer 027,54.00,35.00,19.00,0.00,9
+2026-03-11,RS-1028,Central,Furniture,File Cabinet,Small Business,Synthetic Customer 028,420.00,470.00,-50.00,0.42,3
+2026-03-13,RS-1029,East,Technology,All-in-One Printer,Consumer,Synthetic Customer 029,760.00,590.00,170.00,0.15,1
+2026-03-15,RS-1030,West,Office Supplies,Desk Lamp,Consumer,Synthetic Customer 030,180.00,110.00,70.00,0.05,4
+2026-03-17,RS-1031,South,Furniture,Training Table,Corporate,Synthetic Customer 031,900.00,990.00,-90.00,0.38,2
+2026-03-19,RS-1032,Central,Technology,Video Conferencing Bar,Corporate,Synthetic Customer 032,2800.00,1980.00,820.00,0.06,1
+2026-03-21,RS-1033,East,Office Supplies,Toner Cartridge,Small Business,Synthetic Customer 033,420.00,260.00,160.00,0.04,3
+2026-03-23,RS-1034,West,Furniture,Cafe Table Set,Consumer,Synthetic Customer 034,680.00,770.00,-90.00,0.50,2
+2026-03-25,RS-1035,South,Technology,Barcode Label Printer,Small Business,Synthetic Customer 035,1240.00,900.00,340.00,0.09,2
+2026-03-27,RS-1036,Central,Office Supplies,Mailing Envelope Box,Corporate,Synthetic Customer 036,132.00,82.00,50.00,0.00,11
