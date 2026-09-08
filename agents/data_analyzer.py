@@ -354,6 +354,122 @@ class DataAnalyzerAgent:
 
         return risks
 
+    @staticmethod
+    def detect_industry(schema: dict) -> str:
+        columns = {column.lower() for column in schema.get("columns", [])}
+        if {"mrr", "arr", "churn_rate"}.issubset(columns):
+            return "saas"
+        if {"shipping_cost", "delivery_time_days", "delay_flag"}.issubset(columns):
+            return "logistics"
+        return "generic"
+
+    def build_saas_analysis(self) -> dict:
+        assert self.df is not None
+        df = self.df.copy()
+        month_col = "month" if "month" in df.columns else None
+        plan_col = "plan_type" if "plan_type" in df.columns else None
+        segment_col = "customer_segment" if "customer_segment" in df.columns else None
+
+        kpis = {
+            "total_mrr": round(float(df["mrr"].sum()), 2) if "mrr" in df.columns else None,
+            "total_arr": round(float(df["arr"].sum()), 2) if "arr" in df.columns else None,
+            "total_new_customers": int(df["new_customers"].sum()) if "new_customers" in df.columns else None,
+            "total_churned_customers": int(df["churned_customers"].sum()) if "churned_customers" in df.columns else None,
+            "average_churn_rate_percent": round(float(df["churn_rate"].mean() * 100), 2) if "churn_rate" in df.columns else None,
+            "total_expansion_revenue": round(float(df["expansion_revenue"].sum()), 2) if "expansion_revenue" in df.columns else None,
+            "total_support_tickets": int(df["support_tickets"].sum()) if "support_tickets" in df.columns else None,
+            "average_cac": round(float(df["cac"].mean()), 2) if "cac" in df.columns else None,
+        }
+        if month_col and "mrr" in df.columns:
+            monthly_mrr = df.groupby(month_col)["mrr"].sum().sort_index()
+            if len(monthly_mrr) >= 2 and monthly_mrr.iloc[0] != 0:
+                kpis["mrr_growth_percent"] = round(float((monthly_mrr.iloc[-1] - monthly_mrr.iloc[0]) / monthly_mrr.iloc[0] * 100), 2)
+
+        def segment_summary(column: str) -> dict:
+            agg = {
+                "mrr": "sum",
+                "arr": "sum",
+                "new_customers": "sum",
+                "churned_customers": "sum",
+                "churn_rate": "mean",
+                "expansion_revenue": "sum",
+                "support_tickets": "sum",
+                "cac": "mean",
+            }
+            available_agg = {key: value for key, value in agg.items() if key in df.columns}
+            grouped = df.groupby(column, dropna=False).agg(available_agg).reset_index()
+            rows = [self.clean_record(record) for record in grouped.to_dict(orient="records")]
+            best = grouped.sort_values("mrr", ascending=False).iloc[0].to_dict() if "mrr" in grouped else {}
+            risk = grouped.sort_values("churn_rate", ascending=False).iloc[0].to_dict() if "churn_rate" in grouped else {}
+            return {
+                "dimension": column,
+                "rows": rows,
+                "best_by_mrr": self.clean_record(best) if best else {},
+                "risk_by_churn": self.clean_record(risk) if risk else {},
+            }
+
+        segments = {}
+        for column in [plan_col, segment_col]:
+            if column:
+                segments[column] = segment_summary(column)
+
+        return {"industry": "saas", "kpis": kpis, "segments": segments}
+
+    def build_logistics_analysis(self) -> dict:
+        assert self.df is not None
+        df = self.df.copy()
+        total_shipments = len(df)
+        total_order_value = float(df["order_value"].sum()) if "order_value" in df.columns else None
+        total_shipping_cost = float(df["shipping_cost"].sum()) if "shipping_cost" in df.columns else None
+        delay_count = int(df["delay_flag"].sum()) if "delay_flag" in df.columns else None
+        damage_count = int(df["damage_flag"].sum()) if "damage_flag" in df.columns else None
+        kpis = {
+            "total_shipments": total_shipments,
+            "total_order_value": round(total_order_value, 2) if total_order_value is not None else None,
+            "total_shipping_cost": round(total_shipping_cost, 2) if total_shipping_cost is not None else None,
+            "shipping_cost_ratio": round(total_shipping_cost / total_order_value, 4) if total_order_value else None,
+            "average_delivery_time_days": round(float(df["delivery_time_days"].mean()), 2) if "delivery_time_days" in df.columns else None,
+            "delayed_shipments": delay_count,
+            "delay_rate": round(delay_count / total_shipments, 4) if delay_count is not None and total_shipments else None,
+            "damage_shipments": damage_count,
+            "damage_rate": round(damage_count / total_shipments, 4) if damage_count is not None and total_shipments else None,
+        }
+
+        def segment_summary(column: str) -> dict:
+            grouped = df.groupby(column, dropna=False).agg(
+                shipment_count=("delay_flag", "count"),
+                delay_count=("delay_flag", "sum"),
+                damage_count=("damage_flag", "sum"),
+                average_delivery_time_days=("delivery_time_days", "mean"),
+                total_shipping_cost=("shipping_cost", "sum"),
+                average_shipping_cost=("shipping_cost", "mean"),
+            ).reset_index()
+            grouped["delay_rate"] = grouped["delay_count"] / grouped["shipment_count"]
+            grouped["damage_rate"] = grouped["damage_count"] / grouped["shipment_count"]
+            best = grouped.sort_values(["delay_rate", "average_delivery_time_days"], ascending=[True, True]).iloc[0].to_dict()
+            risk = grouped.sort_values(["delay_rate", "average_delivery_time_days", "total_shipping_cost"], ascending=[False, False, False]).iloc[0].to_dict()
+            return {
+                "dimension": column,
+                "rows": [self.clean_record(record) for record in grouped.to_dict(orient="records")],
+                "best_by_delivery": self.clean_record(best),
+                "risk_by_delay": self.clean_record(risk),
+            }
+
+        segments = {}
+        for column in ["region", "carrier", "route", "warehouse"]:
+            if column in df.columns:
+                segments[column] = segment_summary(column)
+
+        return {"industry": "logistics", "kpis": kpis, "segments": segments}
+
+    def build_industry_analysis(self, schema: dict) -> dict:
+        industry = self.detect_industry(schema)
+        if industry == "saas":
+            return self.build_saas_analysis()
+        if industry == "logistics":
+            return self.build_logistics_analysis()
+        return {"industry": "generic", "kpis": {}, "segments": {}}
+
     def build_summary_text(self, result: str, roles: dict, kpis: dict, risks: dict) -> str:
         lines = [result]
         detected_roles = {role: column for role, column in roles.items() if column}
@@ -396,6 +512,7 @@ class DataAnalyzerAgent:
         time_trends = self.build_time_trends(roles)
         top_bottom = self.build_top_bottom(roles)
         risks = self.build_risks(roles, overview, numeric_analysis)
+        industry_analysis = self.build_industry_analysis(schema)
         result = self.get_task_result(analysis_task, numeric_analysis, schema)
 
         return {
@@ -412,6 +529,7 @@ class DataAnalyzerAgent:
             "time_trends": time_trends,
             "top_bottom": top_bottom,
             "risks": risks,
+            "industry_analysis": industry_analysis,
             "sample_rows": [
                 self.clean_record(record)
                 for record in self.df.head(5).to_dict(orient="records")

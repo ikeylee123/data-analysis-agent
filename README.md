@@ -67,7 +67,21 @@ GEMINI_MODEL=gemini-2.5-flash
 .\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
-## 5. Example Workflow
+## 5. How to Run Tests
+
+Run the local quality checks with:
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile app.py agents\data_analyzer.py agents\report_generator.py
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+The tests cover industry detection, sample dataset KPI generation, markdown report validation, schema-fidelity checks, Gemini repair retry behavior, and local fallback behavior.
+
+## 6. Example Workflow
 
 1. Open the Streamlit app.
 2. Upload a CSV or Excel dataset.
@@ -81,7 +95,7 @@ GEMINI_MODEL=gemini-2.5-flash
 7. Generate a markdown business insight report.
 8. Review the recommended action plan and data limitations.
 
-## 6. Sample Datasets
+## 7. Sample Datasets
 
 The project includes multi-industry sample datasets under `data/sample/`:
 
@@ -91,7 +105,7 @@ The project includes multi-industry sample datasets under `data/sample/`:
 | SaaS Metrics | `data/sample/saas_metrics_sample.csv` | MRR, ARR, churn, expansion revenue, CAC, and support tickets |
 | Logistics Operations | `data/sample/logistics_operations_sample.csv` | Delivery delays, shipping cost, carrier performance, and damage risk |
 
-## 7. Sample Reports
+## 8. Sample Reports
 
 Sample management reports are available under `examples/sample_reports/`.
 
@@ -109,7 +123,7 @@ Chinese reports:
 
 These reports show the intended output style for different industries and demonstrate how findings, evidence, hypotheses, recommendations, and limitations should be separated.
 
-## 8. Demo Screenshots
+## 9. Demo Screenshots
 
 Screenshots can be added under `assets/` using the following filenames.
 
@@ -133,7 +147,7 @@ Screenshots can be added under `assets/` using the following filenames.
 
 ![Dashboard](assets/dashboard.png)
 
-## 9. Business Report Structure
+## 10. Business Report Structure
 
 Generated reports follow a consistent management-report structure:
 
@@ -161,7 +175,7 @@ Each recommended action is expected to include:
 - Timeframe
 - KPI to track
 
-## 10. Project Architecture
+## 11. Project Architecture
 
 ```text
 app.py
@@ -199,7 +213,7 @@ examples/
     Example English and Chinese management reports
 ```
 
-## 11. Current Limitations
+## 12. Current Limitations
 
 - The application works best with structured tabular data.
 - Field detection is rule-based and may need manual validation for unusual column names.
@@ -209,7 +223,7 @@ examples/
 - Gemini API quota or rate limits may trigger local fallback report generation.
 - PDF and PPTX export are not yet implemented.
 
-## 12. Roadmap
+## 13. Roadmap
 
 - Add manual field-mapping correction in the UI.
 - Add saved report history.

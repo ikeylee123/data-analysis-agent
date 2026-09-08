@@ -403,10 +403,17 @@ elif page == "报告生成":
                     )
 
                     st.success("报告生成成功。")
+                    source_labels = {
+                        "gemini": "Gemini",
+                        "gemini_repaired": "Gemini repaired",
+                        "local": "Local template",
+                    }
+                    source_label = source_labels.get(report.get("source"), report.get("source", "Unknown"))
+                    st.caption(f"Report source: {source_label}")
                     if report.get("source") == "local" and report.get("fallback_reason"):
                         st.warning(
-                            "Gemini 暂时不可用，已使用本地模板生成报告。"
-                            f"错误信息：{report['fallback_reason']}"
+                            "Gemini 输出未通过安全格式检查，已使用本地模板生成报告。"
+                            f"原因：{report['fallback_reason']}"
                         )
                     st.markdown("---")
                     st.subheader("报告内容预览")

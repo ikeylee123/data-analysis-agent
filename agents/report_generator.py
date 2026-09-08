@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -71,7 +72,17 @@ class ReportGeneratorAgent:
         if numeric_value is None:
             return self.format_value(value)
 
-        count_metrics = {"record_count", "order_count", "total_quantity"}
+        count_metrics = {
+            "record_count",
+            "order_count",
+            "total_quantity",
+            "total_new_customers",
+            "total_churned_customers",
+            "total_support_tickets",
+            "total_shipments",
+            "delayed_shipments",
+            "damage_shipments",
+        }
         percent_metrics = {
             "profit_margin_percent",
             "average_discount_percent",
@@ -79,6 +90,11 @@ class ReportGeneratorAgent:
             "loss_amount_vs_total_profit",
             "high_discount_loss_ratio",
             "profit_margin",
+            "mrr_growth_percent",
+            "average_churn_rate_percent",
+            "shipping_cost_ratio",
+            "delay_rate",
+            "damage_rate",
         }
         if metric in count_metrics:
             return f"{numeric_value:,.0f}"
@@ -121,6 +137,196 @@ class ReportGeneratorAgent:
         for row in rows:
             lines.append("| " + " | ".join(self.escape_table(cell) for cell in row) + " |")
         return lines
+
+    @staticmethod
+    def has_numbered_section(content: str, section_number: int) -> bool:
+        pattern = rf"(?m)^\s*(?:#{{1,3}}\s*)?{section_number}\.\s+\S+"
+        return bool(re.search(pattern, content))
+
+    @staticmethod
+    def section_block(content: str, start_number: int, end_number: int) -> str:
+        start_pattern = rf"(?m)^\s*(?:#{{1,3}}\s*)?{start_number}\.\s+\S+"
+        start_match = re.search(start_pattern, content)
+        if not start_match:
+            return ""
+
+        end_pattern = rf"(?m)^\s*(?:#{{1,3}}\s*)?{end_number}\.\s+\S+"
+        end_match = re.search(end_pattern, content[start_match.end():])
+        if not end_match:
+            return content[start_match.end():]
+        return content[start_match.end():start_match.end() + end_match.start()]
+
+    @staticmethod
+    def is_markdown_separator(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return False
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells:
+            return False
+        return all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+    @staticmethod
+    def has_overlong_table_separator(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            return False
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        return any(re.fullmatch(r":?-{20,}:?", cell or "") for cell in cells)
+
+    def validate_report_markdown(self, content: str, report_settings: dict | None = None) -> list[str]:
+        settings = self.normalize_report_settings(report_settings)
+        errors = []
+
+        if not isinstance(content, str) or not content.strip():
+            return ["Report content is empty."]
+
+        for section_number in range(1, 8):
+            if not self.has_numbered_section(content, section_number):
+                errors.append(f"Missing section {section_number}.")
+
+        if settings["language"] == "English":
+            required_labels = [
+                "Executive Summary",
+                "KPI Snapshot",
+                "Key Insights with Evidence",
+                "Segment Deep Dive",
+                "Root Cause Hypotheses",
+                "Recommended Action Plan",
+                "Data Limitations",
+            ]
+            for label in required_labels:
+                if label not in content:
+                    errors.append(f"Missing English section label: {label}.")
+
+        kpi_block = self.section_block(content, 2, 3)
+        if not kpi_block:
+            errors.append("KPI Snapshot section is missing or not isolated.")
+            return errors
+
+        if "## 3." in kpi_block or "\n3. " in kpi_block:
+            errors.append("KPI table appears to swallow the next section heading.")
+
+        table_lines = [line.strip() for line in kpi_block.splitlines() if line.strip().startswith("|")]
+        if len(table_lines) < 3:
+            errors.append("KPI Snapshot does not contain a complete markdown table.")
+            return errors
+
+        header = table_lines[0]
+        expected_headers = (
+            ["Metric", "Value", "Business Interpretation"]
+            if settings["language"] == "English"
+            else None
+        )
+        if expected_headers and not all(header_name in header for header_name in expected_headers):
+            errors.append("KPI Snapshot table header does not match the requested language.")
+
+        separator = table_lines[1]
+        if not self.is_markdown_separator(separator):
+            errors.append("KPI Snapshot table separator is invalid markdown.")
+        if self.has_overlong_table_separator(separator) or len(separator) > 120:
+            errors.append("KPI Snapshot table separator is suspiciously long.")
+
+        for line in table_lines:
+            if "## 3." in line or "3. Key Insights" in line:
+                errors.append("KPI Snapshot table contains the next section heading.")
+                break
+
+        return errors
+
+    @staticmethod
+    def markdown_table_row_count(block: str) -> int | None:
+        table_lines = [line.strip() for line in block.splitlines() if line.strip().startswith("|")]
+        if len(table_lines) < 3:
+            return None
+        separator_index = None
+        for index, line in enumerate(table_lines):
+            if ReportGeneratorAgent.is_markdown_separator(line):
+                separator_index = index
+                break
+        if separator_index is None:
+            return None
+        return max(0, len(table_lines) - separator_index - 1)
+
+    @staticmethod
+    def schema_item_count(report_schema: dict, key: str) -> int:
+        items = report_schema.get(key, [])
+        return len(items) if isinstance(items, list) else 0
+
+    def validate_schema_fidelity(
+        self,
+        content: str,
+        report_schema: dict,
+        report_settings: dict | None = None,
+    ) -> list[str]:
+        settings = self.normalize_report_settings(report_settings)
+        errors = []
+
+        section_limits = [
+            ("KPI Snapshot", 2, 3, self.schema_item_count(report_schema, "KPI Snapshot")),
+            (
+                "Root Cause Hypotheses",
+                5,
+                6,
+                self.schema_item_count(report_schema, "Root Cause Hypotheses"),
+            ),
+            (
+                "Recommended Action Plan",
+                6,
+                7,
+                self.schema_item_count(report_schema, "Recommended Action Plan"),
+            ),
+        ]
+        for label, start_number, end_number, expected_count in section_limits:
+            block = self.section_block(content, start_number, end_number)
+            row_count = self.markdown_table_row_count(block)
+            if row_count is None:
+                errors.append(f"{label} must use a markdown table.")
+                continue
+            if expected_count and row_count > expected_count:
+                errors.append(
+                    f"{label} has {row_count} rows, exceeding schema count {expected_count}."
+                )
+
+        lowered = content.lower()
+        unsupported_causal_patterns = [
+            r"\broot cause is\b",
+            r"\broot causes are\b",
+            r"\bcaused by weather\b",
+            r"\bcaused by traffic\b",
+            r"\bdue to weather\b",
+            r"\bdue to traffic\b",
+            r"\bdue to infrastructure\b",
+            r"\bweather caused\b",
+            r"\btraffic caused\b",
+            r"\binfrastructure caused\b",
+            r"\bservice quality caused\b",
+            r"\bcustomer behavior caused\b",
+        ]
+        for pattern in unsupported_causal_patterns:
+            if re.search(pattern, lowered):
+                errors.append(f"Unsupported deterministic causal claim detected: {pattern}.")
+                break
+
+        if settings["language"] == "English":
+            forbidden_labels = ["指标", "业务解读", "根因假设", "建议行动计划"]
+            for label in forbidden_labels:
+                if label in content:
+                    errors.append(f"English report contains Chinese table or section label: {label}.")
+                    break
+
+        return errors
+
+    def validate_generated_report(
+        self,
+        content: str,
+        report_schema: dict,
+        report_settings: dict | None = None,
+    ) -> list[str]:
+        return (
+            self.validate_report_markdown(content, report_settings)
+            + self.validate_schema_fidelity(content, report_schema, report_settings)
+        )
 
     @staticmethod
     def high_confidence() -> str:
@@ -181,8 +387,49 @@ class ReportGeneratorAgent:
 
     @staticmethod
     def localize_metric_name(metric: str, settings: dict) -> str:
+        english_labels = {
+            "record_count": "Record Count",
+            "total_sales": "Total Sales",
+            "average_sales": "Average Sales",
+            "total_profit": "Total Profit",
+            "profit_margin_percent": "Profit Margin",
+            "total_quantity": "Total Quantity",
+            "average_discount_percent": "Average Discount",
+            "order_count": "Order Count",
+            "average_order_value": "Average Order Value",
+            "loss_record_ratio": "Loss Record Ratio",
+            "loss_amount_vs_total_profit": "Loss Amount vs Total Profit",
+            "high_discount_loss_ratio": "High-Discount Loss Ratio",
+            "profit_margin": "Profit Margin",
+            "discount_risk_level": "Discount Risk Level",
+            "total_mrr": "Total MRR",
+            "total_arr": "Total ARR",
+            "mrr_growth_percent": "MRR Growth",
+            "total_new_customers": "New Customers",
+            "total_churned_customers": "Churned Customers",
+            "average_churn_rate_percent": "Average Churn Rate",
+            "total_expansion_revenue": "Expansion Revenue",
+            "total_support_tickets": "Support Tickets",
+            "average_cac": "Average CAC",
+            "total_shipments": "Total Shipments",
+            "total_order_value": "Total Order Value",
+            "total_shipping_cost": "Total Shipping Cost",
+            "shipping_cost_ratio": "Shipping Cost Ratio",
+            "average_delivery_time_days": "Average Delivery Time",
+            "delayed_shipments": "Delayed Shipments",
+            "delay_rate": "Delay Rate",
+            "damage_shipments": "Damage-Flagged Shipments",
+            "damage_rate": "Damage Rate",
+            "plan_type": "Plan Type",
+            "customer_segment": "Customer Segment",
+            "carrier": "Carrier",
+            "route": "Route",
+            "warehouse": "Warehouse",
+            "mrr / churn_rate": "MRR / Churn Rate",
+            "delay_rate / delivery_time": "Delay Rate / Delivery Time",
+        }
         if settings.get("language") != "Chinese":
-            return metric
+            return english_labels.get(metric, metric)
         labels = {
             "record_count": "记录数",
             "total_sales": "总销售额",
@@ -198,6 +445,31 @@ class ReportGeneratorAgent:
             "high_discount_loss_ratio": "高折扣亏损占亏损记录比例",
             "profit_margin": "利润率",
             "discount_risk_level": "折扣风险等级",
+            "total_mrr": "总 MRR",
+            "total_arr": "总 ARR",
+            "mrr_growth_percent": "MRR 增长率",
+            "total_new_customers": "新增客户数",
+            "total_churned_customers": "流失客户数",
+            "average_churn_rate_percent": "平均流失率",
+            "total_expansion_revenue": "扩张收入",
+            "total_support_tickets": "支持工单数",
+            "average_cac": "平均 CAC",
+            "total_shipments": "总发运量",
+            "total_order_value": "总订单价值",
+            "total_shipping_cost": "总运输成本",
+            "shipping_cost_ratio": "运输成本率",
+            "average_delivery_time_days": "平均交付天数",
+            "delayed_shipments": "延迟发运量",
+            "delay_rate": "延迟率",
+            "damage_shipments": "损坏发运量",
+            "damage_rate": "损坏率",
+            "plan_type": "套餐类型",
+            "customer_segment": "客户分层",
+            "carrier": "承运商",
+            "route": "路线",
+            "warehouse": "仓库",
+            "mrr / churn_rate": "MRR / 流失率",
+            "delay_rate / delivery_time": "延迟率 / 交付时间",
             "Sales": "销售额",
             "Profit": "利润",
             "Discount": "折扣",
@@ -511,8 +783,8 @@ class ReportGeneratorAgent:
                         segment.get("best_value", self.metric_unavailable()),
                         segment.get("weakest_object", self.metric_unavailable()),
                         segment.get("weakest_value", self.metric_unavailable()),
-                        self.localize_text(segment.get("business_interpretation", ""), settings),
-                        self.localize_text(segment.get("recommended_follow_up", ""), settings),
+                        self.localized_field(segment, "business_interpretation", settings),
+                        self.localized_field(segment, "recommended_follow_up", settings),
                     ]
                 )
                 continue
@@ -553,6 +825,11 @@ class ReportGeneratorAgent:
                     )
         return rows
 
+    def localized_field(self, item: dict, key: str, settings: dict):
+        if self.is_chinese(settings) and f"{key}_zh" in item:
+            return item[f"{key}_zh"]
+        return self.localize_text(item.get(key, ""), settings)
+
     def compact_analysis_results(self, analysis_results: dict) -> dict:
         if self.is_business_insights(analysis_results):
             return {
@@ -579,6 +856,7 @@ class ReportGeneratorAgent:
             "time_trends": analysis_results.get("time_trends"),
             "top_bottom": analysis_results.get("top_bottom"),
             "risks": analysis_results.get("risks"),
+            "industry_analysis": analysis_results.get("industry_analysis"),
             "sample_rows": analysis_results.get("sample_rows", [])[:5],
         }
         payload = json.dumps(compact, ensure_ascii=False)
@@ -903,9 +1181,376 @@ class ReportGeneratorAgent:
             for metric, details in derived_metrics.items()
         ]
 
+    @staticmethod
+    def industry_type(analysis_results: dict) -> str:
+        industry_analysis = analysis_results.get("industry_analysis") or {}
+        if industry_analysis.get("industry"):
+            return industry_analysis["industry"]
+        columns = {
+            column.lower()
+            for column in analysis_results.get("schema", {}).get("columns", [])
+        }
+        if {"mrr", "arr", "churn_rate"}.issubset(columns):
+            return "saas"
+        if {"shipping_cost", "delivery_time_days", "delay_flag"}.issubset(columns):
+            return "logistics"
+        return "generic"
+
+    @staticmethod
+    def clean_kpi_rows(kpis: dict, preferred_metrics: list[str]) -> list[dict]:
+        return [
+            {"metric": metric, "value": kpis.get(metric)}
+            for metric in preferred_metrics
+            if kpis.get(metric) is not None
+        ]
+
+    @staticmethod
+    def pct_display(value) -> str:
+        number = ReportGeneratorAgent.to_number(value)
+        if number is None:
+            return ReportGeneratorAgent.metric_unavailable()
+        return f"{number:.2%}" if number <= 1 else f"{number:.2f}%"
+
+    def industry_segment_row(
+        self,
+        dimension: str,
+        metric: str,
+        best: dict,
+        risk: dict,
+        best_key: str,
+        risk_key: str,
+        interpretation: str,
+        follow_up: str,
+        interpretation_zh: str | None = None,
+        follow_up_zh: str | None = None,
+    ) -> dict:
+        row = {
+            "segment": dimension,
+            "metric": metric,
+            "best_object": best.get(dimension, self.metric_unavailable()),
+            "best_value": best_key,
+            "weakest_object": risk.get(dimension, self.metric_unavailable()),
+            "weakest_value": risk_key,
+            "business_interpretation": interpretation,
+            "recommended_follow_up": follow_up,
+        }
+        if interpretation_zh:
+            row["business_interpretation_zh"] = interpretation_zh
+        if follow_up_zh:
+            row["recommended_follow_up_zh"] = follow_up_zh
+        return row
+
+    def build_saas_report_schema(self, analysis_results: dict, user_requirements: str) -> dict:
+        industry_analysis = analysis_results.get("industry_analysis", {})
+        kpis = industry_analysis.get("kpis", {})
+        segments = industry_analysis.get("segments", {})
+        preferred_metrics = [
+            "total_mrr",
+            "total_arr",
+            "mrr_growth_percent",
+            "total_new_customers",
+            "total_churned_customers",
+            "average_churn_rate_percent",
+            "total_expansion_revenue",
+            "total_support_tickets",
+            "average_cac",
+        ]
+        kpi_snapshot = self.clean_kpi_rows(kpis, preferred_metrics)
+
+        plan_segment = segments.get("plan_type", {})
+        customer_segment = segments.get("customer_segment", {})
+        plan_best = plan_segment.get("best_by_mrr", {})
+        plan_risk = plan_segment.get("risk_by_churn", {})
+        customer_best = customer_segment.get("best_by_mrr", {})
+        customer_risk = customer_segment.get("risk_by_churn", {})
+
+        insights = []
+        if kpis.get("mrr_growth_percent") is not None:
+            insights.append(
+                {
+                    "Finding": "MRR increased across the available period",
+                    "Finding_zh": "MRR 在当前周期内增长",
+                    "Evidence": f"MRR growth from the first to last available month is {self.format_kpi_value('mrr_growth_percent', kpis.get('mrr_growth_percent'))}.",
+                    "Evidence_zh": f"从首月到末月，MRR 增长率为 {self.format_kpi_value('mrr_growth_percent', kpis.get('mrr_growth_percent'))}。",
+                    "Business Implication": "Revenue momentum is visible, but retention quality should be reviewed alongside churn and support workload.",
+                    "Business Implication_zh": "收入动能明确，但需要结合流失率和支持工单量判断增长质量。",
+                    "Confidence Level": self.high_confidence(),
+                }
+            )
+        if plan_risk:
+            insights.append(
+                {
+                    "Finding": f"{plan_risk.get('plan_type')} has the highest churn rate among plan types",
+                    "Finding_zh": f"{plan_risk.get('plan_type')} 是套餐类型中流失率最高的对象",
+                    "Evidence": f"{plan_risk.get('plan_type')} churn rate is {self.pct_display(plan_risk.get('churn_rate'))}; total churned customers are {self.format_value(plan_risk.get('churned_customers'))}.",
+                    "Evidence_zh": f"{plan_risk.get('plan_type')} 流失率为 {self.pct_display(plan_risk.get('churn_rate'))}；流失客户数为 {self.format_value(plan_risk.get('churned_customers'))}。",
+                    "Business Implication": "Retention review should prioritize the segment with the highest observed churn before scaling acquisition spend.",
+                    "Business Implication_zh": "在扩大获客投入前，应优先复核当前流失率最高的套餐分层。",
+                    "Confidence Level": self.high_confidence(),
+                }
+            )
+        if kpis.get("total_support_tickets") is not None:
+            insights.append(
+                {
+                    "Finding": "Support workload is a measurable retention signal",
+                    "Finding_zh": "支持工单量是可衡量的留存风险信号",
+                    "Evidence": f"Total support tickets are {self.format_value(kpis.get('total_support_tickets'))}.",
+                    "Evidence_zh": f"支持工单总数为 {self.format_value(kpis.get('total_support_tickets'))}。",
+                    "Business Implication": "Support volume should be monitored with churn; it is a signal, not a confirmed churn cause.",
+                    "Business Implication_zh": "支持工单量应与流失率联动监控；它是风险信号，不是已确认的流失原因。",
+                    "Confidence Level": self.medium_confidence(),
+                }
+            )
+
+        segment_rows = []
+        if plan_best and plan_risk:
+            segment_rows.append(
+                self.industry_segment_row(
+                    "plan_type",
+                    "mrr / churn_rate",
+                    plan_best,
+                    plan_risk,
+                    f"MRR {self.format_value(plan_best.get('mrr'))}",
+                    f"Churn {self.pct_display(plan_risk.get('churn_rate'))}",
+                    "Plan performance differs by revenue contribution and churn pressure.",
+                    "Review pricing, onboarding, and retention signals for the highest-churn plan.",
+                    "不同套餐在收入贡献和流失压力上存在差异。",
+                    "复核流失率最高套餐的定价、onboarding 和留存信号。",
+                )
+            )
+        if customer_best and customer_risk:
+            segment_rows.append(
+                self.industry_segment_row(
+                    "customer_segment",
+                    "mrr / churn_rate",
+                    customer_best,
+                    customer_risk,
+                    f"MRR {self.format_value(customer_best.get('mrr'))}",
+                    f"Churn {self.pct_display(customer_risk.get('churn_rate'))}",
+                    "Customer segment performance differs by recurring revenue and churn exposure.",
+                    "Build a retention review for the highest-churn customer segment.",
+                    "不同客户分层在经常性收入和流失风险上存在差异。",
+                    "针对流失率最高的客户分层建立留存复盘。",
+                )
+            )
+
+        hypotheses = [
+            {
+                "Hypothesis": "Starter or SMB churn may be related to onboarding or support friction.",
+                "Hypothesis_zh": "Starter 或 SMB 流失可能与 onboarding 或支持摩擦相关。",
+                "Evidence Level": self.low_confidence_hypothesis(),
+                "Supporting Evidence": "The current dataset shows churn and support tickets, but does not include ticket categories or product usage.",
+                "Supporting Evidence_zh": "当前数据包含流失率和支持工单，但不包含工单类别或产品使用数据。",
+                "Additional Data Needed": "Ticket categories, response time, product usage, cancellation reasons, and cohort retention.",
+                "Additional Data Needed_zh": "工单类别、响应时间、产品使用、取消原因和 cohort 留存数据。",
+                "Data Needed for Validation": "Ticket categories, response time, product usage, cancellation reasons, and cohort retention.",
+                "Data Needed for Validation_zh": "工单类别、响应时间、产品使用、取消原因和 cohort 留存数据。",
+            }
+        ]
+        actions = [
+            {
+                "priority": "High",
+                "action": f"Review retention drivers for {plan_risk.get('plan_type', 'the highest-churn plan')}.",
+                "action_zh": f"复核 {plan_risk.get('plan_type', '流失率最高套餐')} 的留存驱动因素。",
+                "business_rationale": "This plan has the highest observed churn rate in the current dataset.",
+                "business_rationale_zh": "该套餐在当前数据集中流失率最高。",
+                "suggested_owner": "Customer Success",
+                "suggested_owner_zh": "客户成功团队",
+                "timeframe": "1 month",
+                "timeframe_zh": "1 个月",
+                "KPI to track": "churn rate, net MRR retention",
+                "KPI to track_zh": "流失率、净 MRR 留存",
+            },
+            {
+                "priority": "Medium",
+                "action": "Create a support-ticket watchlist for accounts with rising churn.",
+                "action_zh": "为流失压力上升的账户建立支持工单观察清单。",
+                "business_rationale": "Support tickets are measurable and can be reviewed with churn, but are not confirmed as a cause.",
+                "business_rationale_zh": "支持工单可与流失率共同监控，但当前不能将其确认为流失原因。",
+                "suggested_owner": "Support Operations",
+                "suggested_owner_zh": "支持运营团队",
+                "timeframe": "1 month",
+                "timeframe_zh": "1 个月",
+                "KPI to track": "support tickets, first response time, churn rate",
+                "KPI to track_zh": "支持工单数、首次响应时间、流失率",
+            },
+        ]
+        limitations = [
+            "The dataset does not include product usage, cancellation reasons, cohort retention, or customer feedback, so churn causes remain hypotheses.",
+            "Profit, gross margin, and LTV are not included; CAC efficiency cannot be fully evaluated without LTV or margin data.",
+        ]
+        limitations_zh = [
+            "数据集不包含产品使用、取消原因、cohort 留存或客户反馈，因此流失原因仍属于假设。",
+            "数据集不包含利润、毛利率和 LTV，因此无法完整评估 CAC 效率。",
+        ]
+        return {
+            "Industry": "saas",
+            "Executive Summary": [],
+            "KPI Snapshot": kpi_snapshot,
+            "Derived Metrics": {},
+            "Key Insights with Evidence": insights,
+            "Segment Deep Dive": segment_rows,
+            "Root Cause Hypotheses": hypotheses,
+            "Recommended Action Plan": actions,
+            "Data Limitations": limitations,
+            "Data Limitations_zh": limitations_zh,
+        }
+
+    def build_logistics_report_schema(self, analysis_results: dict, user_requirements: str) -> dict:
+        industry_analysis = analysis_results.get("industry_analysis", {})
+        kpis = industry_analysis.get("kpis", {})
+        segments = industry_analysis.get("segments", {})
+        preferred_metrics = [
+            "total_shipments",
+            "total_order_value",
+            "total_shipping_cost",
+            "shipping_cost_ratio",
+            "average_delivery_time_days",
+            "delayed_shipments",
+            "delay_rate",
+            "damage_shipments",
+            "damage_rate",
+        ]
+        kpi_snapshot = self.clean_kpi_rows(kpis, preferred_metrics)
+
+        segment_rows = []
+        for dimension in ["region", "carrier", "route", "warehouse"]:
+            segment = segments.get(dimension, {})
+            best = segment.get("best_by_delivery", {})
+            risk = segment.get("risk_by_delay", {})
+            if not best or not risk:
+                continue
+            segment_rows.append(
+                self.industry_segment_row(
+                    dimension,
+                    "delay_rate / delivery_time",
+                    best,
+                    risk,
+                    f"Delay {self.pct_display(best.get('delay_rate'))}; {self.format_value(best.get('average_delivery_time_days'))} days",
+                    f"Delay {self.pct_display(risk.get('delay_rate'))}; {self.format_value(risk.get('average_delivery_time_days'))} days",
+                    "Operational performance differs by delay rate, delivery time, and shipping cost.",
+                    f"Review {dimension} '{risk.get(dimension, self.metric_unavailable())}' delay and cost records.",
+                    "运营表现差异主要体现在延迟率、交付时间和运输成本。",
+                    f"复核 {dimension} '{risk.get(dimension, self.metric_unavailable())}' 的延迟和成本记录。",
+                )
+            )
+
+        carrier_risk = segments.get("carrier", {}).get("risk_by_delay", {})
+        region_risk = segments.get("region", {}).get("risk_by_delay", {})
+        route_risk = segments.get("route", {}).get("risk_by_delay", {})
+        insights = [
+            {
+                "Finding": "Delivery delays are a material operational issue",
+                "Finding_zh": "交付延迟是当前样例中的主要运营问题",
+                "Evidence": f"Delayed shipments are {self.format_value(kpis.get('delayed_shipments'))}, equal to {self.format_kpi_value('delay_rate', kpis.get('delay_rate'))} of shipments.",
+                "Evidence_zh": f"延迟发运量为 {self.format_value(kpis.get('delayed_shipments'))}，占总发运量的 {self.format_kpi_value('delay_rate', kpis.get('delay_rate'))}。",
+                "Business Implication": "The operations team should prioritize delay reduction before treating this as a financial profit issue.",
+                "Business Implication_zh": "运营团队应优先降低延迟，而不是把该问题误判为利润字段缺失导致的财务问题。",
+                "Confidence Level": self.high_confidence(),
+            },
+            {
+                "Finding": f"{carrier_risk.get('carrier', 'A carrier segment')} shows the highest delay pressure",
+                "Finding_zh": f"{carrier_risk.get('carrier', '某个承运商分层')} 显示最高延迟压力",
+                "Evidence": f"Carrier delay rate is {self.pct_display(carrier_risk.get('delay_rate'))}; average delivery time is {self.format_value(carrier_risk.get('average_delivery_time_days'))} days.",
+                "Evidence_zh": f"该承运商延迟率为 {self.pct_display(carrier_risk.get('delay_rate'))}；平均交付时间为 {self.format_value(carrier_risk.get('average_delivery_time_days'))} 天。",
+                "Business Implication": "Carrier-level SLA and route performance should be reviewed, but the dataset does not prove the root cause.",
+                "Business Implication_zh": "应复核运营 SLA 和路线表现，但当前数据不能证明具体根因。",
+                "Confidence Level": self.high_confidence(),
+            },
+            {
+                "Finding": "Damage flags overlap with a subset of shipments",
+                "Finding_zh": "部分发运记录出现损坏标记",
+                "Evidence": f"Damage-flagged shipments are {self.format_value(kpis.get('damage_shipments'))}, equal to {self.format_kpi_value('damage_rate', kpis.get('damage_rate'))} of shipments.",
+                "Evidence_zh": f"损坏标记发运量为 {self.format_value(kpis.get('damage_shipments'))}，占总发运量的 {self.format_kpi_value('damage_rate', kpis.get('damage_rate'))}。",
+                "Business Implication": "Damage should be tracked as an operational quality signal; handling or packaging causes require additional data.",
+                "Business Implication_zh": "损坏应作为运营质量信号跟踪；处理流程或包装原因需要额外数据验证。",
+                "Confidence Level": self.medium_confidence(),
+            },
+        ]
+        hypotheses = [
+            {
+                "Hypothesis": "Carrier or route execution may be contributing to delays.",
+                "Hypothesis_zh": "承运商或路线执行可能影响延迟表现。",
+                "Evidence Level": self.medium_confidence(),
+                "Supporting Evidence": f"Highest-risk segment examples include {carrier_risk.get('carrier', 'carrier')} and {route_risk.get('route', 'route')}.",
+                "Supporting Evidence_zh": f"当前高风险分层包括 {carrier_risk.get('carrier', '承运商')} 和 {route_risk.get('route', '路线')}。",
+                "Additional Data Needed": "Carrier SLA, pickup timestamp, route distance, exception codes, weather, and traffic data.",
+                "Additional Data Needed_zh": "承运商 SLA、取件时间戳、路线距离、异常代码、天气和交通数据。",
+                "Data Needed for Validation": "Carrier SLA, pickup timestamp, route distance, exception codes, weather, and traffic data.",
+                "Data Needed for Validation_zh": "承运商 SLA、取件时间戳、路线距离、异常代码、天气和交通数据。",
+            }
+        ]
+        actions = [
+            {
+                "priority": "High",
+                "action": f"Review delay exceptions for {carrier_risk.get('carrier', 'the highest-delay carrier')}.",
+                "action_zh": f"复核 {carrier_risk.get('carrier', '延迟率最高承运商')} 的延迟异常。",
+                "business_rationale": "This carrier has the highest observed delay pressure in the current dataset.",
+                "business_rationale_zh": "该承运商在当前数据中显示最高延迟压力。",
+                "suggested_owner": "Logistics Operations",
+                "suggested_owner_zh": "物流运营团队",
+                "timeframe": "2 weeks",
+                "timeframe_zh": "2 周",
+                "KPI to track": "delay rate, on-time delivery rate",
+                "KPI to track_zh": "延迟率、准时交付率",
+            },
+            {
+                "priority": "High",
+                "action": f"Audit route {route_risk.get('route', 'with highest delay')} for delay and cost exceptions.",
+                "action_zh": f"审计路线 {route_risk.get('route', '延迟最高路线')} 的延迟与成本异常。",
+                "business_rationale": "Route-level review links the action to the specific operational object with the weakest observed performance.",
+                "business_rationale_zh": "路线级复核能把行动绑定到当前表现最弱的具体运营对象。",
+                "suggested_owner": "Transportation Manager",
+                "suggested_owner_zh": "运输管理团队",
+                "timeframe": "2 weeks",
+                "timeframe_zh": "2 周",
+                "KPI to track": "delivery time, shipping cost per shipment",
+                "KPI to track_zh": "交付时间、单票运输成本",
+            },
+            {
+                "priority": "Medium",
+                "action": "Add structured exception reason tracking for delayed and damaged shipments.",
+                "action_zh": "为延迟和损坏发运记录增加结构化异常原因跟踪。",
+                "business_rationale": "The dataset identifies delay and damage flags but does not explain operational causes.",
+                "business_rationale_zh": "当前数据能识别延迟和损坏标记，但不能解释运营根因。",
+                "suggested_owner": "Data Team",
+                "suggested_owner_zh": "数据团队",
+                "timeframe": "1 month",
+                "timeframe_zh": "1 个月",
+                "KPI to track": "exception reason completeness",
+                "KPI to track_zh": "异常原因记录完整率",
+            },
+        ]
+        limitations = [
+            "The dataset does not include route distance, package weight, service level, weather, traffic, or carrier SLA, so operational causes remain hypotheses.",
+            "Profit fields are not required for this logistics operational report; delay, damage, delivery time, and shipping cost are the primary KPIs.",
+        ]
+        limitations_zh = [
+            "数据集不包含路线距离、包裹重量、服务等级、天气、交通或承运商 SLA，因此运营根因仍属于假设。",
+            "物流运营报告不必须依赖利润字段；延迟、损坏、交付时间和运输成本是本报告的主要 KPI。",
+        ]
+        return {
+            "Industry": "logistics",
+            "Executive Summary": [],
+            "KPI Snapshot": kpi_snapshot,
+            "Derived Metrics": {},
+            "Key Insights with Evidence": insights,
+            "Segment Deep Dive": segment_rows,
+            "Root Cause Hypotheses": hypotheses,
+            "Recommended Action Plan": actions,
+            "Data Limitations": limitations,
+            "Data Limitations_zh": limitations_zh,
+        }
+
     def build_report_schema(self, analysis_results: dict, user_requirements: str) -> dict:
         if self.is_business_insights(analysis_results):
             return self.build_report_schema_from_business_insights(analysis_results, user_requirements)
+
+        industry = self.industry_type(analysis_results)
+        if industry == "saas":
+            return self.build_saas_report_schema(analysis_results, user_requirements)
+        if industry == "logistics":
+            return self.build_logistics_report_schema(analysis_results, user_requirements)
 
         overview = analysis_results.get("overview", {})
         schema = analysis_results.get("schema", {})
@@ -1382,6 +2027,42 @@ class ReportGeneratorAgent:
                 return "收入规模需要结合利润率和亏损记录占比解读，不能单独代表经营质量。"
             if metric == "average_order_value":
                 return "用于观察订单价值结构，并辅助判断大额订单异常。"
+            if metric == "total_mrr":
+                return "衡量 SaaS 经常性收入规模，是增长质量分析的核心指标。"
+            if metric == "total_arr":
+                return "反映年度化经常性收入规模，适合观察合同收入基础。"
+            if metric == "mrr_growth_percent":
+                return "衡量 MRR 从首期到末期的增长动能。"
+            if metric == "total_new_customers":
+                return "反映获客规模，需要与流失客户数一起判断净增长质量。"
+            if metric == "total_churned_customers":
+                return "反映客户流失压力，应与新增客户和 MRR 增长一起解读。"
+            if metric == "average_churn_rate_percent":
+                return "用于衡量留存压力，应该按套餐和客户分层进一步拆解。"
+            if metric == "total_expansion_revenue":
+                return "反映现有客户扩张贡献，但不应被等同为总销售额。"
+            if metric == "total_support_tickets":
+                return "可作为留存风险观察信号，但不能单独证明流失原因。"
+            if metric == "average_cac":
+                return "用于观察获客成本水平，完整 ROI 仍需要 LTV 或毛利数据。"
+            if metric == "total_shipments":
+                return "表示本次物流运营分析覆盖的发运规模。"
+            if metric == "total_order_value":
+                return "表示发运订单价值规模，可与运输成本联动观察。"
+            if metric == "total_shipping_cost":
+                return "表示运输成本压力，应结合路线、承运商和延迟率拆解。"
+            if metric == "shipping_cost_ratio":
+                return "衡量运输成本占订单价值的比例，用于观察成本压力。"
+            if metric == "average_delivery_time_days":
+                return "衡量平均交付效率，应结合延迟率和承运商表现解读。"
+            if metric == "delayed_shipments":
+                return "表示已被标记为延迟的发运记录数量。"
+            if metric == "delay_rate":
+                return "衡量延迟问题的覆盖面，是物流运营优先级指标。"
+            if metric == "damage_shipments":
+                return "表示有损坏标记的发运记录数量。"
+            if metric == "damage_rate":
+                return "衡量运营质量风险，但具体原因需要额外字段验证。"
 
         if metric in {"profit_margin", "profit_margin_percent"}:
             percent = number if number is not None and number <= 1 else (number / 100 if number is not None else None)
@@ -1420,6 +2101,42 @@ class ReportGeneratorAgent:
             return "Revenue scale should be assessed together with margin and loss-making record ratio."
         if metric == "average_order_value":
             return "Helps assess order value structure and spot potential large-order exposure."
+        if metric == "total_mrr":
+            return "Measures SaaS recurring revenue scale and anchors growth-quality analysis."
+        if metric == "total_arr":
+            return "Shows annualized recurring revenue base across the available records."
+        if metric == "mrr_growth_percent":
+            return "Shows recurring revenue momentum from the first to the last available period."
+        if metric == "total_new_customers":
+            return "Shows acquisition volume and should be read with churned customers."
+        if metric == "total_churned_customers":
+            return "Shows retention pressure and should be read with new customers and MRR growth."
+        if metric == "average_churn_rate_percent":
+            return "Measures retention pressure and should be drilled down by plan and customer segment."
+        if metric == "total_expansion_revenue":
+            return "Shows expansion contribution from existing customers; it should not be treated as total sales."
+        if metric == "total_support_tickets":
+            return "Can be monitored as a retention-risk signal, but does not prove churn cause by itself."
+        if metric == "average_cac":
+            return "Shows acquisition cost level; full ROI still needs LTV or gross margin."
+        if metric == "total_shipments":
+            return "Shows the operational shipment volume covered by this analysis."
+        if metric == "total_order_value":
+            return "Shows shipment order value and should be read with shipping cost."
+        if metric == "total_shipping_cost":
+            return "Shows transportation cost pressure to drill down by route and carrier."
+        if metric == "shipping_cost_ratio":
+            return "Measures shipping cost as a share of order value."
+        if metric == "average_delivery_time_days":
+            return "Measures delivery efficiency and should be read with delay rate."
+        if metric == "delayed_shipments":
+            return "Shows how many shipments are explicitly flagged as delayed."
+        if metric == "delay_rate":
+            return "Measures how widespread the delay issue is across shipments."
+        if metric == "damage_shipments":
+            return "Shows how many shipments are explicitly flagged as damaged."
+        if metric == "damage_rate":
+            return "Measures operational quality risk, but causes require additional data."
 
         interpretations = {
             "record_count": "Shows the amount of data supporting this report.",
@@ -1459,6 +2176,7 @@ class ReportGeneratorAgent:
 
     def executive_summary_text(self, report_schema: dict, settings: dict | None = None) -> str:
         settings = self.normalize_report_settings(settings)
+        industry = report_schema.get("Industry", "generic")
         kpi_values = {
             item.get("metric"): item.get("value")
             for item in report_schema.get("KPI Snapshot", [])
@@ -1485,7 +2203,58 @@ class ReportGeneratorAgent:
         confidence = self.high_confidence()
         if self.metric_unavailable() in {profit_margin, loss_record_ratio, loss_amount_vs_profit}:
             confidence = self.medium_confidence()
-        limitation = limitations[0] if limitations else "The report is based on computed summaries and samples, not a manual review of every raw record."
+        localized_limitations = (
+            report_schema.get("Data Limitations_zh")
+            if self.is_chinese(settings) and report_schema.get("Data Limitations_zh")
+            else limitations
+        )
+        limitation = (
+            localized_limitations[0]
+            if localized_limitations
+            else "The report is based on computed summaries and samples, not a manual review of every raw record."
+        )
+
+        if industry == "saas":
+            if self.is_chinese(settings):
+                return "\n".join(
+                    [
+                        f"- **总体表现:** 总 MRR 为 {self.format_kpi_value('total_mrr', kpi_values.get('total_mrr'))}，总 ARR 为 {self.format_kpi_value('total_arr', kpi_values.get('total_arr'))}；MRR 增长率为 {self.format_kpi_value('mrr_growth_percent', kpi_values.get('mrr_growth_percent'))}。",
+                        f"- **主要管理问题:** 平均流失率为 {self.format_kpi_value('average_churn_rate_percent', kpi_values.get('average_churn_rate_percent'))}，需要优先复核最高流失套餐和客户分层。",
+                        f"- **业务影响:** 新增客户数为 {self.format_kpi_value('total_new_customers', kpi_values.get('total_new_customers'))}，流失客户数为 {self.format_kpi_value('total_churned_customers', kpi_values.get('total_churned_customers'))}；增长质量需要结合 churn 和支持工单判断。",
+                        f"- **优先行动:** {(self.localized_field(actions[0], 'action', settings) if actions else '复核 SaaS 留存和分层表现').rstrip('。.')}。",
+                        f"- **置信度 / 限制:** 高置信度。{self.localize_text(limitation, settings)}",
+                    ]
+                )
+            return "\n".join(
+                [
+                    f"- **Overall performance:** Total MRR is {self.format_kpi_value('total_mrr', kpi_values.get('total_mrr'))}, total ARR is {self.format_kpi_value('total_arr', kpi_values.get('total_arr'))}, and MRR growth is {self.format_kpi_value('mrr_growth_percent', kpi_values.get('mrr_growth_percent'))}.",
+                    f"- **Main management issue:** Average churn rate is {self.format_kpi_value('average_churn_rate_percent', kpi_values.get('average_churn_rate_percent'))}; the highest-churn plan and customer segment need priority review.",
+                    f"- **Business impact:** New customers are {self.format_kpi_value('total_new_customers', kpi_values.get('total_new_customers'))}, while churned customers are {self.format_kpi_value('total_churned_customers', kpi_values.get('total_churned_customers'))}; growth quality should be read with churn and support workload.",
+                    f"- **Priority action:** {actions[0]['action'] if actions else 'Review SaaS retention and segment performance.'}",
+                    f"- **Confidence / limitation:** High confidence. {limitation}",
+                ]
+            )
+
+        if industry == "logistics":
+            if self.is_chinese(settings):
+                return "\n".join(
+                    [
+                        f"- **总体表现:** 总发运量为 {self.format_kpi_value('total_shipments', kpi_values.get('total_shipments'))}，平均交付时间为 {self.format_kpi_value('average_delivery_time_days', kpi_values.get('average_delivery_time_days'))} 天，运输成本率为 {self.format_kpi_value('shipping_cost_ratio', kpi_values.get('shipping_cost_ratio'))}。",
+                        f"- **主要管理问题:** 延迟发运量为 {self.format_kpi_value('delayed_shipments', kpi_values.get('delayed_shipments'))}，延迟率为 {self.format_kpi_value('delay_rate', kpi_values.get('delay_rate'))}；应优先复核延迟率最高的承运商和路线。",
+                        f"- **运营影响:** 损坏发运量为 {self.format_kpi_value('damage_shipments', kpi_values.get('damage_shipments'))}，损坏率为 {self.format_kpi_value('damage_rate', kpi_values.get('damage_rate'))}；损坏是质量信号，但当前数据不能证明具体原因。",
+                        f"- **优先行动:** {(self.localized_field(actions[0], 'action', settings) if actions else '复核物流延迟和损坏异常').rstrip('。.')}。",
+                        f"- **置信度 / 限制:** 高置信度。{self.localize_text(limitation, settings)}",
+                    ]
+                )
+            return "\n".join(
+                [
+                    f"- **Overall performance:** Total shipments are {self.format_kpi_value('total_shipments', kpi_values.get('total_shipments'))}, average delivery time is {self.format_kpi_value('average_delivery_time_days', kpi_values.get('average_delivery_time_days'))} days, and shipping cost ratio is {self.format_kpi_value('shipping_cost_ratio', kpi_values.get('shipping_cost_ratio'))}.",
+                    f"- **Main management issue:** Delayed shipments are {self.format_kpi_value('delayed_shipments', kpi_values.get('delayed_shipments'))}, with delay rate of {self.format_kpi_value('delay_rate', kpi_values.get('delay_rate'))}; the highest-delay carrier and route should be reviewed first.",
+                    f"- **Operational impact:** Damage-flagged shipments are {self.format_kpi_value('damage_shipments', kpi_values.get('damage_shipments'))}, with damage rate of {self.format_kpi_value('damage_rate', kpi_values.get('damage_rate'))}; damage is a quality signal, but the current data does not prove the cause.",
+                    f"- **Priority action:** {actions[0]['action'] if actions else 'Review logistics delay and damage exceptions.'}",
+                    f"- **Confidence / limitation:** High confidence. {limitation}",
+                ]
+            )
 
         if self.is_chinese(settings):
             localized_action = self.localize_text(priority_action, settings).rstrip("。.")
@@ -1569,13 +2338,13 @@ class ReportGeneratorAgent:
         if settings["length"] == "Brief":
             insights_to_render = insights_to_render[:3]
         for insight in insights_to_render:
-            finding = self.localize_text(insight["Finding"], settings)
+            finding = self.localized_field(insight, "Finding", settings)
             lines.extend(
                 [
                     f"### {finding}",
                     f"- **{labels['finding']}:** {finding}",
-                    f"- **{labels['evidence']}:** {self.localize_text(insight['Evidence'], settings)}",
-                    f"- **{labels['business_implication']}:** {self.localize_text(insight['Business Implication'], settings)}",
+                    f"- **{labels['evidence']}:** {self.localized_field(insight, 'Evidence', settings)}",
+                    f"- **{labels['business_implication']}:** {self.localized_field(insight, 'Business Implication', settings)}",
                     f"- **{labels['confidence_level']}:** {self.localize_confidence(insight['Confidence Level'], settings)}",
                     "",
                 ]
@@ -1607,10 +2376,11 @@ class ReportGeneratorAgent:
         lines.extend([f"## 5. {labels['root_cause_hypotheses']}"])
         hypothesis_rows = [
             [
-                self.localize_text(item["Hypothesis"], settings),
+                self.localized_field(item, "Hypothesis", settings),
                 self.localize_confidence(item["Evidence Level"], settings),
-                self.localize_text(item["Supporting Evidence"], settings),
-                self.localize_text(item.get("Data Needed for Validation") or item["Additional Data Needed"], settings),
+                self.localized_field(item, "Supporting Evidence", settings),
+                self.localized_field(item, "Data Needed for Validation", settings)
+                or self.localized_field(item, "Additional Data Needed", settings),
             ]
             for item in report_schema["Root Cause Hypotheses"]
         ]
@@ -1635,11 +2405,11 @@ class ReportGeneratorAgent:
             action_rows.append(
                 [
                     self.localize_priority(action["priority"], settings),
-                    self.localize_text(action["action"], settings),
-                    self.localize_text(action["business_rationale"], settings),
-                    self.localize_text(action["suggested_owner"], settings),
-                    self.localize_text(action["timeframe"], settings),
-                    self.localize_text(action["KPI to track"], settings),
+                    self.localized_field(action, "action", settings),
+                    self.localized_field(action, "business_rationale", settings),
+                    self.localized_field(action, "suggested_owner", settings),
+                    self.localized_field(action, "timeframe", settings),
+                    self.localized_field(action, "KPI to track", settings),
                 ]
             )
         action_headers = (
@@ -1655,7 +2425,12 @@ class ReportGeneratorAgent:
         )
 
         lines.extend(["", f"## 7. {labels['data_limitations']}"])
-        lines.extend([f"- {self.localize_text(item, settings)}" for item in report_schema["Data Limitations"]])
+        data_limitations = (
+            report_schema.get("Data Limitations_zh")
+            if chinese and report_schema.get("Data Limitations_zh")
+            else report_schema["Data Limitations"]
+        )
+        lines.extend([f"- {self.localize_text(item, settings)}" for item in data_limitations])
 
         if fallback_reason:
             if chinese:
@@ -1717,6 +2492,7 @@ class ReportGeneratorAgent:
         settings = self.normalize_report_settings(report_settings)
         compact_results = self.compact_analysis_results(analysis_results)
         report_schema = self.build_report_schema(analysis_results, user_requirements)
+        industry = report_schema.get("Industry") or self.industry_type(analysis_results)
         if self.is_chinese(settings):
             report_title = "业务绩效洞察报告"
             sections = [
@@ -1766,6 +2542,21 @@ class ReportGeneratorAgent:
             if settings["length"] == "Brief"
             else "Make the report detailed: include richer evidence, practical caveats, and complete action rows."
         )
+        industry_rule = {
+            "saas": (
+                "- This is a SaaS metrics report. Prioritize MRR, ARR, churn, new customers, churned customers, "
+                "expansion revenue, support tickets, CAC, plan type, and customer segment. "
+                "Do not rewrite expansion_revenue as total sales."
+            ),
+            "logistics": (
+                "- This is a logistics operations report. Prioritize shipments, delay rate, damage rate, delivery time, "
+                "shipping cost, region, route, carrier, and warehouse. "
+                "Do not say the report is invalid just because sales or profit fields are absent."
+            ),
+        }.get(
+            industry,
+            "- Use the available business fields. For retail or sales-style data, prioritize sales, profit, margin, discounts, loss records, and segments.",
+        )
         prompt = (
             "Generate a markdown business performance insight report using exactly this title and these sections:\n"
             f"# {report_title}\n"
@@ -1780,6 +2571,7 @@ class ReportGeneratorAgent:
             f"- {length_rule}\n\n"
             "Rules:\n"
             "- Keep the output in markdown.\n"
+            f"{industry_rule}\n"
             f"- KPI Snapshot must be a markdown table with columns: {kpi_columns}.\n"
             f"- Root Cause Hypotheses must be a markdown table with columns: {hypothesis_columns}.\n"
             "- Each hypothesis must include Data Needed for Validation.\n"
@@ -1787,7 +2579,7 @@ class ReportGeneratorAgent:
             "- Do not invent unsupported business facts.\n"
             "- Do not present market competition, inventory clearance, customer behavior, or product lifecycle as confirmed causes unless the dataset contains relevant columns.\n"
             "- Explain what happened, why it matters, what evidence supports it, what the business should do next, and what data limitations exist.\n"
-            "- Recommended actions should be practical and focus on high-discount transactions, loss-making records, profit margin improvement, anomaly checking, and segment-level deep dives when those signals exist.\n"
+            "- Recommended actions should be practical and linked to the strongest available evidence objects in the structured schema.\n"
             "- Separate data-backed findings from hypotheses.\n"
             "- Each key insight must include Finding, Evidence, Business Implication, and Confidence Level.\n"
             f"- Use exactly these confidence labels in the selected language: {confidence_labels}.\n"
@@ -1796,6 +2588,75 @@ class ReportGeneratorAgent:
             f"Structured report schema:\n{json.dumps(report_schema, ensure_ascii=False)}\n\n"
             f"Computed analysis context:\n{json.dumps(compact_results, ensure_ascii=False)}\n\n"
             f"User requirements: {user_requirements or empty_requirements}"
+        )
+        response = self.llm.invoke(prompt)
+        return getattr(response, "content", response)
+
+    def repair_report_markdown(
+        self,
+        content: str,
+        validation_errors: list[str],
+        report_schema: dict,
+        report_settings: dict | None = None,
+    ) -> str:
+        settings = self.normalize_report_settings(report_settings)
+        if self.is_chinese(settings):
+            title = "业务绩效洞察报告"
+            sections = [
+                "1. 执行摘要",
+                "2. KPI 快照",
+                "3. 关键洞察与证据",
+                "4. 分群深入分析",
+                "5. 根因假设",
+                "6. 建议行动计划",
+                "7. 数据限制",
+            ]
+            kpi_columns = "指标 | 数值 | 业务解读"
+            hypothesis_columns = "假设 | 证据等级 | 支撑证据 | 验证所需数据"
+            action_columns = "优先级 | 行动 | 理由 | 负责人 | 时间范围 | 跟踪 KPI"
+            language_rule = "Keep the repaired report in Simplified Chinese."
+        else:
+            title = "Business Performance Insight Report"
+            sections = [
+                "1. Executive Summary",
+                "2. KPI Snapshot",
+                "3. Key Insights with Evidence",
+                "4. Segment Deep Dive",
+                "5. Root Cause Hypotheses",
+                "6. Recommended Action Plan",
+                "7. Data Limitations",
+            ]
+            kpi_columns = "Metric | Value | Business Interpretation"
+            hypothesis_columns = "Hypothesis | Evidence Level | Supporting Evidence | Data Needed for Validation"
+            action_columns = "Priority | Action | Rationale | Owner | Timeframe | KPI to Track"
+            language_rule = "Keep the repaired report in English."
+
+        prompt = (
+            "Repair this business report so it matches the required markdown format and structured schema.\n"
+            "Keep the existing business meaning when it is supported by the schema.\n"
+            "Remove unsupported additions that are not present in the schema.\n"
+            "Do not add new KPIs, hypotheses, actions, causes, or recommendations.\n"
+            "Return only the corrected markdown report, with no commentary.\n\n"
+            f"{language_rule}\n"
+            f"Use exactly this title: # {title}\n"
+            "Keep exactly these numbered sections:\n"
+            + "\n".join(sections)
+            + "\n\n"
+            "Table formatting rules:\n"
+            f"- KPI Snapshot must be a markdown table with columns: {kpi_columns}.\n"
+            f"- Root Cause Hypotheses must be a markdown table with columns: {hypothesis_columns}.\n"
+            f"- Recommended Action Plan must be a markdown table with columns: {action_columns}.\n"
+            "- Markdown table separator rows must use short cells such as | --- | --- | --- |.\n"
+            "- Do not create long dashed separator lines.\n"
+            "- Do not place section headings inside table rows.\n\n"
+            "Schema fidelity rules:\n"
+            "- Use only the provided structured report schema as the source of truth.\n"
+            "- Do not exceed the number of KPI, hypothesis, or action rows in the schema.\n"
+            "- Do not turn hypotheses into confirmed root causes.\n"
+            "- Remove deterministic causal claims that are not directly supported by the schema.\n\n"
+            f"Validation errors to fix:\n{json.dumps(validation_errors, ensure_ascii=False)}\n\n"
+            f"Structured report schema:\n{json.dumps(report_schema, ensure_ascii=False)}\n\n"
+            f"Broken markdown report:\n{content}"
         )
         response = self.llm.invoke(prompt)
         return getattr(response, "content", response)
@@ -1809,11 +2670,49 @@ class ReportGeneratorAgent:
         report_settings = self.normalize_report_settings(report_settings)
         source = "local"
         fallback_reason = None
+        validation_errors = []
+        repair_attempted = False
+        repair_errors = []
+        report_schema = self.build_report_schema(analysis_results, user_requirements)
 
         if self.has_api_key:
             try:
                 report_content = self.generate_ai_report(analysis_results, user_requirements, report_settings)
-                source = "gemini"
+                validation_errors = self.validate_generated_report(
+                    report_content,
+                    report_schema,
+                    report_settings,
+                )
+                if validation_errors:
+                    repair_attempted = True
+                    repaired_content = self.repair_report_markdown(
+                        report_content,
+                        validation_errors,
+                        report_schema,
+                        report_settings,
+                    )
+                    repair_errors = self.validate_generated_report(
+                        repaired_content,
+                        report_schema,
+                        report_settings,
+                    )
+                    if repair_errors:
+                        fallback_reason = (
+                            "Gemini output failed markdown validation after repair: "
+                            + "; ".join(repair_errors)
+                        )
+                        report_content = self.generate_local_report(
+                            analysis_results,
+                            user_requirements,
+                            fallback_reason,
+                            report_settings,
+                        )
+                        source = "local"
+                    else:
+                        report_content = repaired_content
+                        source = "gemini_repaired"
+                else:
+                    source = "gemini"
             except Exception as e:
                 fallback_reason = str(e)
                 report_content = self.generate_local_report(
@@ -1831,5 +2730,8 @@ class ReportGeneratorAgent:
             "content": report_content,
             "source": source,
             "fallback_reason": fallback_reason,
+            "validation_errors": validation_errors,
+            "repair_attempted": repair_attempted,
+            "repair_errors": repair_errors,
             "report_settings": report_settings,
         }
