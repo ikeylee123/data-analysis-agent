@@ -212,6 +212,28 @@ examples/
   sample_reports/
     Example English and Chinese management reports
 ```
+## Reliability Evidence
+
+### Validation-guided Gemini repair
+
+![Gemini repaired report](assets/gemini-repaired-report.png)
+
+The report generator validates Gemini output against required markdown sections,
+table structure, schema row limits, and unsupported causal claims. When the
+first response fails validation, it performs one repair attempt and revalidates
+the repaired output. The screenshot above shows a successfully repaired Gemini
+report.
+
+### Deterministic local fallback
+
+![Local fallback report](assets/local-fallback-report.png)
+
+If Gemini generation fails, or if the repaired response still fails validation,
+the application generates a deterministic local markdown report from the
+computed analysis schema. The screenshot above demonstrates the API-failure
+fallback path. The repair-failure fallback path is covered by pytest in
+`tests/test_report_generator.py`.
+
 
 ## 12. Current Limitations
 
