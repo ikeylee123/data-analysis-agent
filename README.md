@@ -234,7 +234,6 @@ computed analysis schema. The screenshot above demonstrates the API-failure
 fallback path. The repair-failure fallback path is covered by pytest in
 `tests/test_report_generator.py`.
 
-
 ## 12. Current Limitations
 
 - The application works best with structured tabular data.
