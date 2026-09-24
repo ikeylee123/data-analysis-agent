@@ -46,11 +46,18 @@ class DataAnalyzerAgent:
         return {key: cls.clean_value(value) for key, value in record.items()}
 
     @staticmethod
-    def find_first(columns: list[str], keywords: list[str]) -> str | None:
+    def find_first(
+        columns: list[str],
+        keywords: list[str],
+        excluded_keywords: list[str] | None = None,
+    ) -> str | None:
+        excluded_keywords = [keyword.lower() for keyword in (excluded_keywords or [])]
         normalized = [(column, column.lower().replace("_", " ").replace("-", " ")) for column in columns]
         for keyword in keywords:
             keyword = keyword.lower()
             for original, lowered in normalized:
+                if any(excluded in lowered for excluded in excluded_keywords):
+                    continue
                 if keyword in lowered:
                     return original
         return None
@@ -75,6 +82,26 @@ class DataAnalyzerAgent:
                 best_column = column
                 best_score = score
         return best_column if best_score > 0 else None
+
+    @staticmethod
+    def find_order_identifier(columns: list[str]) -> str | None:
+        normalized = [
+            (column, column.lower().replace("-", "_").replace(" ", "_"))
+            for column in columns
+        ]
+        preferred_names = [
+            "order_id",
+            "order_number",
+            "order_no",
+            "shipment_id",
+            "invoice_id",
+            "transaction_id",
+        ]
+        for preferred in preferred_names:
+            for original, lowered in normalized:
+                if lowered == preferred:
+                    return original
+        return None
 
     def infer_schema(self) -> dict:
         assert self.df is not None
@@ -123,7 +150,11 @@ class DataAnalyzerAgent:
         categorical_cols = schema["categorical_columns"]
 
         roles = {
-            "sales": self.find_first(numeric_cols, self.ROLE_KEYWORDS["sales"]),
+            "sales": self.find_first(
+                numeric_cols,
+                self.ROLE_KEYWORDS["sales"],
+                excluded_keywords=["expansion"],
+            ),
             "profit": self.find_first(numeric_cols, self.ROLE_KEYWORDS["profit"]),
             "discount": self.find_first(numeric_cols, self.ROLE_KEYWORDS["discount"]),
             "quantity": self.find_first(numeric_cols, self.ROLE_KEYWORDS["quantity"]),
@@ -131,9 +162,14 @@ class DataAnalyzerAgent:
             "category": self.find_first(categorical_cols, self.ROLE_KEYWORDS["category"]),
             "segment": self.find_first(categorical_cols, self.ROLE_KEYWORDS["segment"]),
             "product": self.find_best(categorical_cols, self.ROLE_KEYWORDS["product"], prefer=["name"]),
-            "customer": self.find_best(categorical_cols, self.ROLE_KEYWORDS["customer"], prefer=["name", "segment"]),
+            "customer": self.find_best(
+                [column for column in categorical_cols if "segment" not in column.lower()]
+                or categorical_cols,
+                self.ROLE_KEYWORDS["customer"],
+                prefer=["name"],
+            ),
             "date": self.find_first(date_cols or columns, self.ROLE_KEYWORDS["date"]),
-            "order": self.find_first(columns, self.ROLE_KEYWORDS["order"]),
+            "order": self.find_order_identifier(columns),
         }
         return roles
 
@@ -162,10 +198,20 @@ class DataAnalyzerAgent:
             series = df[column].dropna()
             if series.empty:
                 continue
+            unique_values = set(series.unique().tolist())
+            is_binary_indicator = (
+                pd.api.types.is_bool_dtype(series)
+                or unique_values.issubset({0, 1})
+                or column.lower().endswith("_flag")
+            )
             q1 = series.quantile(0.25)
             q3 = series.quantile(0.75)
             iqr = q3 - q1
-            outliers = series[(series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)]
+            outliers = (
+                series.iloc[0:0]
+                if is_binary_indicator
+                else series[(series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)]
+            )
             analysis[column] = {
                 "sum": round(float(series.sum()), 4),
                 "mean": round(float(series.mean()), 4),
@@ -369,10 +415,18 @@ class DataAnalyzerAgent:
         month_col = "month" if "month" in df.columns else None
         plan_col = "plan_type" if "plan_type" in df.columns else None
         segment_col = "customer_segment" if "customer_segment" in df.columns else None
+        latest_df = df
+        latest_period = None
+        if month_col:
+            parsed_periods = pd.to_datetime(df[month_col], errors="coerce")
+            if parsed_periods.notna().any():
+                latest_period = parsed_periods.max()
+                latest_df = df.loc[parsed_periods.eq(latest_period)].copy()
 
         kpis = {
-            "total_mrr": round(float(df["mrr"].sum()), 2) if "mrr" in df.columns else None,
-            "total_arr": round(float(df["arr"].sum()), 2) if "arr" in df.columns else None,
+            "snapshot_period": latest_period.strftime("%Y-%m") if latest_period is not None else None,
+            "current_mrr": round(float(latest_df["mrr"].sum()), 2) if "mrr" in latest_df.columns else None,
+            "current_arr": round(float(latest_df["arr"].sum()), 2) if "arr" in latest_df.columns else None,
             "total_new_customers": int(df["new_customers"].sum()) if "new_customers" in df.columns else None,
             "total_churned_customers": int(df["churned_customers"].sum()) if "churned_customers" in df.columns else None,
             "average_churn_rate_percent": round(float(df["churn_rate"].mean() * 100), 2) if "churn_rate" in df.columns else None,
@@ -386,9 +440,7 @@ class DataAnalyzerAgent:
                 kpis["mrr_growth_percent"] = round(float((monthly_mrr.iloc[-1] - monthly_mrr.iloc[0]) / monthly_mrr.iloc[0] * 100), 2)
 
         def segment_summary(column: str) -> dict:
-            agg = {
-                "mrr": "sum",
-                "arr": "sum",
+            flow_agg = {
                 "new_customers": "sum",
                 "churned_customers": "sum",
                 "churn_rate": "mean",
@@ -396,13 +448,26 @@ class DataAnalyzerAgent:
                 "support_tickets": "sum",
                 "cac": "mean",
             }
-            available_agg = {key: value for key, value in agg.items() if key in df.columns}
-            grouped = df.groupby(column, dropna=False).agg(available_agg).reset_index()
+            available_flow_agg = {key: value for key, value in flow_agg.items() if key in df.columns}
+            grouped = (
+                df.groupby(column, dropna=False).agg(available_flow_agg).reset_index()
+                if available_flow_agg
+                else df[[column]].drop_duplicates().reset_index(drop=True)
+            )
+            snapshot_agg = {
+                key: "sum"
+                for key in ["mrr", "arr"]
+                if key in latest_df.columns
+            }
+            if snapshot_agg:
+                snapshot_grouped = latest_df.groupby(column, dropna=False).agg(snapshot_agg).reset_index()
+                grouped = grouped.merge(snapshot_grouped, on=column, how="left")
             rows = [self.clean_record(record) for record in grouped.to_dict(orient="records")]
             best = grouped.sort_values("mrr", ascending=False).iloc[0].to_dict() if "mrr" in grouped else {}
             risk = grouped.sort_values("churn_rate", ascending=False).iloc[0].to_dict() if "churn_rate" in grouped else {}
             return {
                 "dimension": column,
+                "snapshot_period": latest_period.strftime("%Y-%m") if latest_period is not None else None,
                 "rows": rows,
                 "best_by_mrr": self.clean_record(best) if best else {},
                 "risk_by_churn": self.clean_record(risk) if risk else {},

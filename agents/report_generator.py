@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 from datetime import datetime
@@ -249,6 +250,86 @@ class ReportGeneratorAgent:
         return max(0, len(table_lines) - separator_index - 1)
 
     @staticmethod
+    def parse_reported_number(value: str) -> float | None:
+        match = re.search(r"-?\d[\d,]*(?:\.\d+)?", value)
+        if not match:
+            return None
+        try:
+            return float(match.group(0).replace(",", ""))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def normalized_kpi_label(value: str) -> str:
+        return "".join(character for character in value.casefold() if character.isalnum())
+
+    @staticmethod
+    def critical_metrics_for_industry(industry: str) -> set[str]:
+        return {
+            "retail": {"total_sales", "total_profit", "profit_margin_percent"},
+            "generic": {"total_sales", "total_profit", "profit_margin_percent"},
+            "saas": {"current_mrr", "current_arr", "mrr_growth_percent", "average_churn_rate_percent"},
+            "logistics": {"total_shipments", "shipping_cost_ratio", "average_delivery_time_days", "delay_rate", "damage_rate"},
+        }.get(industry, set())
+
+    def kpi_label_aliases(self, metric: str, settings: dict) -> set[str]:
+        aliases = {metric, self.localize_metric_name(metric, settings)}
+        explicit = {
+            "profit_margin_percent": {"Profit Margin (%)", "Profit Margin Percent"},
+            "average_churn_rate_percent": {"Churn Rate", "Average Churn"},
+            "average_delivery_time_days": {"Avg Delivery Time", "Average Delivery Time (Days)"},
+        }
+        aliases.update(explicit.get(metric, set()))
+        return {self.normalized_kpi_label(alias) for alias in aliases}
+
+    def normalized_reported_kpi_value(self, cell: str, metric: str) -> float | None:
+        value = self.parse_reported_number(cell)
+        if value is None:
+            return None
+        percent_metrics = {
+            "profit_margin_percent", "mrr_growth_percent", "average_churn_rate_percent",
+            "shipping_cost_ratio", "delay_rate", "damage_rate",
+        }
+        if metric in percent_metrics and "%" not in cell and abs(value) <= 1:
+            return value * 100
+        return value
+
+    def validate_critical_kpi_fidelity(
+        self,
+        content: str,
+        report_schema: dict,
+        report_settings: dict | None = None,
+    ) -> list[str]:
+        industry = report_schema.get("Industry", "retail")
+        critical_metrics = self.critical_metrics_for_industry(industry)
+        settings = self.normalize_report_settings(report_settings)
+        block = self.section_block(content, 2, 3)
+        table_rows = [line.strip() for line in block.splitlines() if line.strip().startswith("|")]
+        errors = []
+        parsed_rows = []
+        for row in table_rows[2:]:
+            cells = [cell.strip() for cell in row.strip("|").split("|")]
+            if len(cells) >= 2:
+                parsed_rows.append((self.normalized_kpi_label(cells[0]), cells[1]))
+        for item in report_schema.get("KPI Snapshot", []):
+            metric = item.get("metric") if isinstance(item, dict) else None
+            value = item.get("value") if isinstance(item, dict) else None
+            if metric not in critical_metrics or self.to_number(value) is None:
+                continue
+            aliases = self.kpi_label_aliases(metric, settings)
+            matching = [cell for label, cell in parsed_rows if label in aliases]
+            if not matching:
+                errors.append(f"Critical KPI is missing from KPI Snapshot: {metric}.")
+                continue
+            actual = self.normalized_reported_kpi_value(matching[0], metric)
+            expected_display = self.format_kpi_value(metric, value)
+            expected = self.normalized_reported_kpi_value(expected_display, metric)
+            tolerance = max(0.01, abs(expected or 0) * 0.0001)
+            if actual is None or expected is None or not math.isclose(actual, expected, abs_tol=tolerance):
+                errors.append(f"Critical KPI value does not match deterministic schema: {metric}.")
+        return errors
+
+    @staticmethod
     def schema_item_count(report_schema: dict, key: str) -> int:
         items = report_schema.get(key, [])
         return len(items) if isinstance(items, list) else 0
@@ -326,6 +407,7 @@ class ReportGeneratorAgent:
         return (
             self.validate_report_markdown(content, report_settings)
             + self.validate_schema_fidelity(content, report_schema, report_settings)
+            + self.validate_critical_kpi_fidelity(content, report_schema, report_settings)
         )
 
     @staticmethod
@@ -402,8 +484,8 @@ class ReportGeneratorAgent:
             "high_discount_loss_ratio": "High-Discount Loss Ratio",
             "profit_margin": "Profit Margin",
             "discount_risk_level": "Discount Risk Level",
-            "total_mrr": "Total MRR",
-            "total_arr": "Total ARR",
+            "current_mrr": "Current MRR",
+            "current_arr": "Current ARR",
             "mrr_growth_percent": "MRR Growth",
             "total_new_customers": "New Customers",
             "total_churned_customers": "Churned Customers",
@@ -445,8 +527,8 @@ class ReportGeneratorAgent:
             "high_discount_loss_ratio": "高折扣亏损占亏损记录比例",
             "profit_margin": "利润率",
             "discount_risk_level": "折扣风险等级",
-            "total_mrr": "总 MRR",
-            "total_arr": "总 ARR",
+            "current_mrr": "当前 MRR",
+            "current_arr": "当前 ARR",
             "mrr_growth_percent": "MRR 增长率",
             "total_new_customers": "新增客户数",
             "total_churned_customers": "流失客户数",
@@ -971,6 +1053,7 @@ class ReportGeneratorAgent:
             ]
 
         return {
+            "Industry": "retail",
             "Executive Summary": executive_summary,
             "KPI Snapshot": self.normalize_kpi_snapshot(
                 (kpi_snapshot or [{"metric": "business_insights", "value": "provided"}])
@@ -1245,8 +1328,8 @@ class ReportGeneratorAgent:
         kpis = industry_analysis.get("kpis", {})
         segments = industry_analysis.get("segments", {})
         preferred_metrics = [
-            "total_mrr",
-            "total_arr",
+            "current_mrr",
+            "current_arr",
             "mrr_growth_percent",
             "total_new_customers",
             "total_churned_customers",
@@ -1634,6 +1717,7 @@ class ReportGeneratorAgent:
         )
 
         return {
+            "Industry": "retail",
             "Executive Summary": executive_summary,
             "KPI Snapshot": kpi_snapshot,
             "Derived Metrics": derived_metrics,
@@ -2027,9 +2111,9 @@ class ReportGeneratorAgent:
                 return "收入规模需要结合利润率和亏损记录占比解读，不能单独代表经营质量。"
             if metric == "average_order_value":
                 return "用于观察订单价值结构，并辅助判断大额订单异常。"
-            if metric == "total_mrr":
+            if metric == "current_mrr":
                 return "衡量 SaaS 经常性收入规模，是增长质量分析的核心指标。"
-            if metric == "total_arr":
+            if metric == "current_arr":
                 return "反映年度化经常性收入规模，适合观察合同收入基础。"
             if metric == "mrr_growth_percent":
                 return "衡量 MRR 从首期到末期的增长动能。"
@@ -2101,9 +2185,9 @@ class ReportGeneratorAgent:
             return "Revenue scale should be assessed together with margin and loss-making record ratio."
         if metric == "average_order_value":
             return "Helps assess order value structure and spot potential large-order exposure."
-        if metric == "total_mrr":
+        if metric == "current_mrr":
             return "Measures SaaS recurring revenue scale and anchors growth-quality analysis."
-        if metric == "total_arr":
+        if metric == "current_arr":
             return "Shows annualized recurring revenue base across the available records."
         if metric == "mrr_growth_percent":
             return "Shows recurring revenue momentum from the first to the last available period."
@@ -2218,7 +2302,7 @@ class ReportGeneratorAgent:
             if self.is_chinese(settings):
                 return "\n".join(
                     [
-                        f"- **总体表现:** 总 MRR 为 {self.format_kpi_value('total_mrr', kpi_values.get('total_mrr'))}，总 ARR 为 {self.format_kpi_value('total_arr', kpi_values.get('total_arr'))}；MRR 增长率为 {self.format_kpi_value('mrr_growth_percent', kpi_values.get('mrr_growth_percent'))}。",
+                        f"- **总体表现:** 最新月度快照 MRR 为 {self.format_kpi_value('current_mrr', kpi_values.get('current_mrr'))}，ARR 为 {self.format_kpi_value('current_arr', kpi_values.get('current_arr'))}；MRR 增长率为 {self.format_kpi_value('mrr_growth_percent', kpi_values.get('mrr_growth_percent'))}。",
                         f"- **主要管理问题:** 平均流失率为 {self.format_kpi_value('average_churn_rate_percent', kpi_values.get('average_churn_rate_percent'))}，需要优先复核最高流失套餐和客户分层。",
                         f"- **业务影响:** 新增客户数为 {self.format_kpi_value('total_new_customers', kpi_values.get('total_new_customers'))}，流失客户数为 {self.format_kpi_value('total_churned_customers', kpi_values.get('total_churned_customers'))}；增长质量需要结合 churn 和支持工单判断。",
                         f"- **优先行动:** {(self.localized_field(actions[0], 'action', settings) if actions else '复核 SaaS 留存和分层表现').rstrip('。.')}。",
@@ -2227,7 +2311,7 @@ class ReportGeneratorAgent:
                 )
             return "\n".join(
                 [
-                    f"- **Overall performance:** Total MRR is {self.format_kpi_value('total_mrr', kpi_values.get('total_mrr'))}, total ARR is {self.format_kpi_value('total_arr', kpi_values.get('total_arr'))}, and MRR growth is {self.format_kpi_value('mrr_growth_percent', kpi_values.get('mrr_growth_percent'))}.",
+                    f"- **Overall performance:** Current MRR is {self.format_kpi_value('current_mrr', kpi_values.get('current_mrr'))}, current ARR is {self.format_kpi_value('current_arr', kpi_values.get('current_arr'))}, and MRR growth is {self.format_kpi_value('mrr_growth_percent', kpi_values.get('mrr_growth_percent'))}.",
                     f"- **Main management issue:** Average churn rate is {self.format_kpi_value('average_churn_rate_percent', kpi_values.get('average_churn_rate_percent'))}; the highest-churn plan and customer segment need priority review.",
                     f"- **Business impact:** New customers are {self.format_kpi_value('total_new_customers', kpi_values.get('total_new_customers'))}, while churned customers are {self.format_kpi_value('total_churned_customers', kpi_values.get('total_churned_customers'))}; growth quality should be read with churn and support workload.",
                     f"- **Priority action:** {actions[0]['action'] if actions else 'Review SaaS retention and segment performance.'}",
@@ -2661,6 +2745,19 @@ class ReportGeneratorAgent:
         response = self.llm.invoke(prompt)
         return getattr(response, "content", response)
 
+    @staticmethod
+    def classify_provider_status(error: Exception | str) -> str:
+        message = str(error).casefold()
+        if "429" in message or "rate limit" in message or "rate_limit" in message or "quota" in message:
+            return "rate_limited"
+        if any(token in message for token in ("401", "403", "api key", "credential", "authentication", "configuration")):
+            return "configuration_error"
+        return "unavailable"
+
+    @staticmethod
+    def contains_kpi_fidelity_error(errors: list[str]) -> bool:
+        return any("critical kpi" in error.casefold() for error in errors)
+
     def run(
         self,
         analysis_results: dict,
@@ -2673,6 +2770,11 @@ class ReportGeneratorAgent:
         validation_errors = []
         repair_attempted = False
         repair_errors = []
+        provider_status = "available" if self.has_api_key else "configuration_error"
+        report_validation_status = "not_run"
+        kpi_fidelity_status = "not_run"
+        fallback_used = not self.has_api_key
+        validation_ran = False
         report_schema = self.build_report_schema(analysis_results, user_requirements)
 
         if self.has_api_key:
@@ -2683,6 +2785,7 @@ class ReportGeneratorAgent:
                     report_schema,
                     report_settings,
                 )
+                validation_ran = True
                 if validation_errors:
                     repair_attempted = True
                     repaired_content = self.repair_report_markdown(
@@ -2697,6 +2800,11 @@ class ReportGeneratorAgent:
                         report_settings,
                     )
                     if repair_errors:
+                        report_validation_status = "failed"
+                        kpi_fidelity_status = (
+                            "failed" if self.contains_kpi_fidelity_error(repair_errors) else "passed"
+                        )
+                        fallback_used = True
                         fallback_reason = (
                             "Gemini output failed markdown validation after repair: "
                             + "; ".join(repair_errors)
@@ -2711,10 +2819,21 @@ class ReportGeneratorAgent:
                     else:
                         report_content = repaired_content
                         source = "gemini_repaired"
+                        report_validation_status = "passed"
+                        kpi_fidelity_status = "passed"
                 else:
                     source = "gemini"
-            except Exception as e:
-                fallback_reason = str(e)
+                    report_validation_status = "passed"
+                    kpi_fidelity_status = "passed"
+            except Exception as error:
+                provider_status = self.classify_provider_status(error)
+                fallback_reason = str(error)
+                fallback_used = True
+                if validation_ran:
+                    report_validation_status = "failed"
+                    kpi_fidelity_status = (
+                        "failed" if self.contains_kpi_fidelity_error(validation_errors) else "passed"
+                    )
                 report_content = self.generate_local_report(
                     analysis_results,
                     user_requirements,
@@ -2722,13 +2841,21 @@ class ReportGeneratorAgent:
                     report_settings,
                 )
         else:
-            report_content = self.generate_local_report(analysis_results, user_requirements, report_settings=report_settings)
+            report_content = self.generate_local_report(
+                analysis_results,
+                user_requirements,
+                report_settings=report_settings,
+            )
 
         return {
             "status": "success",
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "content": report_content,
             "source": source,
+            "provider_status": provider_status,
+            "report_validation_status": report_validation_status,
+            "kpi_fidelity_status": kpi_fidelity_status,
+            "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
             "validation_errors": validation_errors,
             "repair_attempted": repair_attempted,

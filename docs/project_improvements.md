@@ -212,8 +212,8 @@ The following improvements were added:
   - Logistics if `shipping_cost`, `delivery_time_days`, and `delay_flag` exist.
   - Generic fallback otherwise.
 - SaaS-specific analysis:
-  - Total MRR
-  - Total ARR
+  - Current MRR
+  - Current ARR
   - MRR growth
   - New customers
   - Churned customers

@@ -1,0 +1,1 @@
+"""Offline evaluation package for the AI Business Insight Copilot."""
