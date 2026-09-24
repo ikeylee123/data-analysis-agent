@@ -1,257 +1,146 @@
-# AI Business Insight Copilot
+# Business Insight Copilot
 
-AI Business Insight Copilot is a Streamlit-based business analytics assistant that helps turn uploaded datasets into structured business insights, risk signals, and management-style markdown reports.
+A Streamlit-based AI analytics application that combines deterministic business KPI analysis with Gemini-generated management reports, validation-guided repair, and deterministic fallback across Retail, SaaS, and Logistics scenarios.
 
-The project is designed as a GitHub portfolio project for demonstrating practical AI-assisted data analysis workflows across multiple business domains. It supports report generation in both Chinese and English.
+## Key capabilities
 
-## 1. Project Overview
+- Deterministic Retail, SaaS, and Logistics KPI analysis with Pandas
+- Domain-aware KPI cards, management charts, segments, trends, correlations, and risks
+- Current-snapshot SaaS MRR/ARR semantics and operational Logistics metrics
+- Gemini-generated management reports from structured summaries rather than full datasets
+- Markdown/schema validation and selected critical-KPI fidelity checks
+- One validation-guided repair attempt followed by deterministic local fallback
+- Persistent Streamlit workflow state across page navigation
+- Bilingual English/Chinese UI with independent report-language selection
+- Reproducible offline three-domain evaluation and 98 deterministic tests
 
-This application helps users upload business datasets, run automated analysis, identify key metrics and risks, and generate a structured business insight report.
+## Architecture
 
-The current focus is on realistic enterprise reporting rather than simple data summaries. Generated reports are designed to answer:
-
-- What happened?
-- Why does it matter?
-- What evidence supports the finding?
-- What should the business do next?
-- What limitations prevent stronger conclusions?
-
-## 2. Key Features
-
-- Upload CSV, Excel, or PDF files.
-- Automatically identify common business fields such as sales, profit, discount, quantity, region, category, product, customer, date, and order fields.
-- Generate KPI summaries and derived business metrics.
-- Detect loss-making records, high-discount loss records, numeric outliers, and missing-field risks.
-- Produce segment deep dives for business dimensions such as region, category, product, customer, and segment.
-- Generate markdown business reports with evidence, confidence levels, hypotheses, recommendations, and data limitations.
-- Support Chinese and English report generation.
-- Include multi-industry sample datasets and sample reports for portfolio demonstration.
-
-## 3. Tech Stack
-
-- Python
-- Streamlit
-- Pandas
-- Plotly
-- LangChain
-- Google Gemini API
-- python-dotenv
-
-## 4. How to Run Locally
-
-1. Create and activate a virtual environment.
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
+```mermaid
+flowchart TD
+    A[CSV / Excel] --> B[Input Parsing + Domain / Role Inference]
+    B --> C[Deterministic Pandas Analytics]
+    C --> D[Structured Business Schema]
+    D --> E[Gemini Report Generation]
+    E --> F[Schema / KPI Fidelity Validation]
+    F -->|Passed| I[Management Report]
+    F -->|Failed| G[Validation-Guided Repair]
+    G -->|Passed| I
+    G -->|Still Failed or Provider Unavailable| H[Deterministic Fallback]
+    H --> I
 ```
 
-2. Install dependencies.
+Python and Pandas remain the source of truth for calculated metrics. Gemini receives compact structured summaries and produces the management narrative. Validation accepts supported labels and equivalent numeric formatting while rejecting genuine drift in selected critical KPIs.
 
-```powershell
-pip install -r requirements.txt
-```
+## Product workflow
 
-3. Configure environment variables.
+1. **Data Overview** — upload CSV/Excel data, review quality, detected domain, and field mapping.
+2. **Business Analytics** — inspect domain KPIs, business charts, segment comparisons, trends, correlations, and risks.
+3. **AI Management Report** — generate a structured report and review its source, validation, KPI-fidelity, and fallback status.
 
-Create a `.env` file based on `.env.example` and add your Google Gemini API key.
+The application supports Chinese and English reports with:
 
-```text
-GOOGLE_API_KEY=your_google_api_key_here
-GEMINI_MODEL=gemini-2.5-flash
-```
+- Executive Summary
+- KPI Snapshot
+- Key Insights & Evidence
+- Segment Analysis
+- Root-Cause Hypotheses
+- Recommended Actions
+- Data Limitations
 
-4. Start the Streamlit app.
+## Supported scenarios
 
-```powershell
-.\.venv\Scripts\python.exe -m streamlit run app.py
-```
+| Domain | Representative analytics |
+| --- | --- |
+| Retail | Sales, profit, margin, discount exposure, loss records, category/region contribution |
+| SaaS | Current MRR/ARR, MRR growth, churn, expansion revenue, plan and customer-segment comparison |
+| Logistics | Shipment volume, delay/damage rates, delivery time, shipping-cost ratio, carrier/region performance |
 
-## 5. How to Run Tests
+Synthetic sample datasets are available in `data/sample/`.
 
-Run the local quality checks with:
+## Reliability design
 
-```powershell
-.\.venv\Scripts\python.exe -m py_compile app.py agents\data_analyzer.py agents\report_generator.py
-```
+The report pipeline separates deterministic analysis from LLM presentation:
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
+- The report schema contains computed KPIs, evidence, hypotheses, actions, and limitations.
+- Critical-KPI validation checks a selected domain-specific set rather than claiming complete fact verification.
+- Equivalent formats such as `0.4722` and `47.22%` are normalized for supported percentage KPIs.
+- Explicit supported KPI aliases are accepted; genuine KPI drift is rejected.
+- Invalid output receives one guided repair attempt.
+- A failed repair or unavailable provider produces a deterministic local report.
 
-The tests cover industry detection, sample dataset KPI generation, markdown report validation, schema-fidelity checks, Gemini repair retry behavior, and local fallback behavior.
-
-## 6. Example Workflow
-
-1. Open the Streamlit app.
-2. Upload a CSV or Excel dataset.
-3. Run the data analysis step.
-4. Review detected fields, KPI summary, risk signals, trends, and segment analysis.
-5. Go to the report generation page.
-6. Choose report settings:
-   - Language: Chinese or English
-   - Tone: Executive Summary or Analyst Report
-   - Length: Brief or Detailed
-7. Generate a markdown business insight report.
-8. Review the recommended action plan and data limitations.
-
-## 7. Sample Datasets
-
-The project includes multi-industry sample datasets under `data/sample/`:
-
-| Dataset | File | Business Scenario |
-| --- | --- | --- |
-| Retail Sales | `data/sample/retail_sales_sample.csv` | Sales, profit, discount risk, and loss-making products |
-| SaaS Metrics | `data/sample/saas_metrics_sample.csv` | MRR, ARR, churn, expansion revenue, CAC, and support tickets |
-| Logistics Operations | `data/sample/logistics_operations_sample.csv` | Delivery delays, shipping cost, carrier performance, and damage risk |
-
-## 8. Sample Reports
-
-Sample management reports are available under `examples/sample_reports/`.
-
-English reports:
-
-- `examples/sample_reports/retail_sales_report.md`
-- `examples/sample_reports/saas_metrics_report.md`
-- `examples/sample_reports/logistics_operations_report.md`
-
-Chinese reports:
-
-- `examples/sample_reports/retail_sales_report_zh.md`
-- `examples/sample_reports/saas_metrics_report_zh.md`
-- `examples/sample_reports/logistics_operations_report_zh.md`
-
-These reports show the intended output style for different industries and demonstrate how findings, evidence, hypotheses, recommendations, and limitations should be separated.
-
-## 9. Demo Screenshots
-
-Screenshots can be added under `assets/` using the following filenames.
-
-### Upload Page
-
-![Upload Page](assets/upload_page.png)
-
-### Analysis Page
-
-![Analysis Page](assets/analysis_page.png)
-
-### Report Settings
-
-![Report Settings](assets/report_settings.png)
-
-### Generated Report
-
-![Generated Report](assets/generated_report.png)
-
-### Dashboard
-
-![Dashboard](assets/dashboard.png)
-
-## 10. Business Report Structure
-
-Generated reports follow a consistent management-report structure:
-
-1. Executive Summary
-2. KPI Snapshot
-3. Key Insights with Evidence
-4. Segment Deep Dive
-5. Root Cause Hypotheses
-6. Recommended Action Plan
-7. Data Limitations
-
-Each key insight is expected to include:
-
-- Finding
-- Evidence
-- Business implication
-- Confidence level
-
-Each recommended action is expected to include:
-
-- Priority
-- Action
-- Business rationale
-- Suggested owner
-- Timeframe
-- KPI to track
-
-## 11. Project Architecture
-
-```text
-app.py
-  Streamlit UI, page navigation, upload flow, analysis flow, report generation flow
-
-agents/
-  data_analyzer.py
-    Field detection, KPI computation, trend analysis, risk detection, top/bottom analysis
-
-  report_generator.py
-    Business report schema, derived metrics, evidence-safe report rendering, Gemini report prompt
-
-  file_parser.py
-    File parsing helpers
-
-utils/
-  file_handler.py
-    Upload and file reading utilities
-
-  chart_generator.py
-    Plotly chart helpers
-
-data/
-  sample/
-    Multi-industry sample datasets
-
-  uploads/
-    Uploaded files during local usage
-
-  reports/
-    Local report output directory
-
-examples/
-  sample_reports/
-    Example English and Chinese management reports
-```
-## Reliability Evidence
-
-### Validation-guided Gemini repair
+### Validation-guided repair
 
 ![Gemini repaired report](assets/gemini-repaired-report.png)
-
-The report generator validates Gemini output against required markdown sections,
-table structure, schema row limits, and unsupported causal claims. When the
-first response fails validation, it performs one repair attempt and revalidates
-the repaired output. The screenshot above shows a successfully repaired Gemini
-report.
 
 ### Deterministic local fallback
 
 ![Local fallback report](assets/local-fallback-report.png)
 
-If Gemini generation fails, or if the repaired response still fails validation,
-the application generates a deterministic local markdown report from the
-computed analysis schema. The screenshot above demonstrates the API-failure
-fallback path. The repair-failure fallback path is covered by pytest in
-`tests/test_report_generator.py`.
+These are existing reliability-path screenshots. Primary product screenshots should be captured from the final interface before publication.
 
-## 12. Current Limitations
+## Offline evaluation
 
-- The application works best with structured tabular data.
-- Field detection is rule-based and may need manual validation for unusual column names.
-- Reports are generated from computed summaries and samples, not full manual audit of every raw record.
-- Root cause explanations are treated as hypotheses unless directly supported by available fields.
-- Market competition, inventory, customer behavior, product lifecycle, weather, traffic, or operational constraints are not treated as confirmed causes unless the dataset includes supporting fields.
-- Gemini API quota or rate limits may trigger local fallback report generation.
-- PDF and PPTX export are not yet implemented.
+The repository includes a reproducible offline evaluation over three synthetic fixtures. It is a project regression suite, not a production benchmark.
 
-## 13. Roadmap
+| Domain | KPI correctness | Report structure | Reliability/fallback | Evidence separation |
+| --- | --- | --- | --- | --- |
+| Retail | PASS | PASS | PASS | PASS |
+| SaaS | PASS | PASS | PASS | PASS |
+| Logistics | PASS | PASS | PASS | PASS |
 
-- Add manual field-mapping correction in the UI.
-- Add saved report history.
-- Add automatic chart recommendations.
-- Add richer time-series trend interpretation.
-- Add cohort-style analysis for SaaS datasets.
-- Add route and carrier scorecards for logistics datasets.
-- Add report export to PDF and PPTX.
-- Add data privacy checks and sensitive-field masking.
-- Add more robust multilingual report templates.
+```powershell
+.\.venv\Scripts\python.exe -m evals.run_eval
+```
+
+See [docs/EVALUATION.md](docs/EVALUATION.md) for definitions and limitations.
+
+## Run locally
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+```
+
+Add your Gemini key to `.env` using the documented environment variable name, then start the application:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+## Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Current verified result: **98 passed**.
+
+The suite covers domain detection, role inference, KPI semantics, binary-flag handling, report structure, critical-KPI fidelity, repair/fallback behavior, UI formatting helpers, workflow state persistence, and offline evaluation regressions.
+
+## Repository structure
+
+```text
+app.py                    Streamlit workflow and presentation
+agents/data_analyzer.py   Deterministic analytics and domain logic
+agents/report_generator.py Structured report schema, validation, repair, fallback
+utils/                    File, chart, UI, and session-state helpers
+data/sample/              Synthetic Retail, SaaS, and Logistics fixtures
+evals/                    Reproducible offline evaluation
+tests/                    Deterministic regression tests
+examples/sample_reports/  Example management reports
+docs/                     Evaluation and engineering notes
+assets/                   Existing reliability screenshots
+```
+
+## Limitations
+
+- Role inference is keyword/schema based and may require manual review for unfamiliar columns.
+- Deterministic domain logic targets supported Retail, SaaS, and Logistics schemas.
+- Critical-KPI validation covers selected metrics; it is not complete semantic fact verification.
+- Gemini is the single integrated LLM provider path.
+- Evaluation uses small synthetic fixtures and does not establish production-scale reliability.
+- Correlations are descriptive and do not establish causation.
+- Workflow state is session scoped; there is no persistent database or report history.
